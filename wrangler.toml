@@ -7,6 +7,7 @@ compatibility_flags = ["nodejs_compat"]
 binding = "DB"
 database_name = "chomp-buzz-db"
 database_id = "placeholder-replace-with-actual-id"
+migrations_dir = "migrations"
 
 # Environment variables (set via wrangler secret)
 # VAPID_PUBLIC_KEY - Web Push public key
