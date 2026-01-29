@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getRequestContext } from '@cloudflare/next-on-pages';
-import type { Env, Member, Pair, StatusResponse } from '@/lib/types';
+import type { Env, Member, MemberPair, Pair, StatusResponse } from '@/lib/types';
 
 const OVEN_SECONDS = 108;
 
@@ -40,6 +40,10 @@ export async function GET(request: NextRequest) {
     const now = Math.floor(Date.now() / 1000);
     const deviceId = request.cookies.get('deviceId')?.value;
 
+    // Get slot from query params (default to 1)
+    const slotParam = request.nextUrl.searchParams.get('slot');
+    const slot: 1 | 2 = slotParam === '2' ? 2 : 1;
+
     if (!deviceId) {
       return NextResponse.json<StatusResponse>({
         state: 'cooling',
@@ -48,6 +52,7 @@ export async function GET(request: NextRequest) {
         serverNow: now,
         lastSentAt: null,
         lastReceivedAt: null,
+        slot,
       });
     }
 
@@ -64,6 +69,7 @@ export async function GET(request: NextRequest) {
         serverNow: now,
         lastSentAt: null,
         lastReceivedAt: null,
+        slot,
       });
     }
 
@@ -103,40 +109,87 @@ export async function GET(request: NextRequest) {
         serverNow: now,
         lastSentAt: null,
         lastReceivedAt: null,
+        slot,
       });
     }
 
-    // Get the pair for last_chomp_at
-    let pair: Pair | null = null;
+    // Try to use new schema (member_pairs)
+    let useLegacySchema = false;
+    let memberPair: MemberPair | null = null;
+
     try {
-      pair = await db
-        .prepare('SELECT * FROM pairs WHERE id = ?')
-        .bind(member.pair_id)
-        .first<Pair>();
+      memberPair = await db
+        .prepare('SELECT * FROM member_pairs WHERE member_id = ? AND slot = ?')
+        .bind(member.id, slot)
+        .first<MemberPair>();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (message.includes('no such column: last_chomp_at')) {
-        console.warn('Pairs.last_chomp_at missing; falling back to member data.');
+      if (message.includes('no such table: member_pairs')) {
+        useLegacySchema = true;
       } else {
         throw error;
       }
     }
 
-    // Calculate oven state for local user
+    // If using legacy schema or no member_pair for this slot, use old behavior
+    if (useLegacySchema || !memberPair) {
+      // Legacy behavior - use member table data
+      let pair: Pair | null = null;
+      try {
+        pair = await db
+          .prepare('SELECT * FROM pairs WHERE id = ?')
+          .bind(member.pair_id)
+          .first<Pair>();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.includes('no such column: last_chomp_at')) {
+          console.warn('Pairs.last_chomp_at missing; falling back to member data.');
+        } else {
+          throw error;
+        }
+      }
+
+      // Calculate oven state for local user
+      let state: 'cooling' | 'oven' = 'cooling';
+      let ovenRemainingSeconds = 0;
+
+      if (member.last_chomp_at) {
+        const elapsed = now - member.last_chomp_at;
+        if (elapsed < OVEN_SECONDS) {
+          state = 'oven';
+          ovenRemainingSeconds = OVEN_SECONDS - elapsed;
+        }
+      }
+
+      const lastSentAt = member.last_chomp_at ?? null;
+      const lastReceivedAt = member.last_received_at ?? pair?.last_chomp_at ?? null;
+      const lastChompRelative = getRelativeTime(lastReceivedAt ?? lastSentAt ?? null);
+
+      return NextResponse.json<StatusResponse>({
+        state,
+        ovenRemainingSeconds,
+        lastChompRelative,
+        serverNow: now,
+        lastSentAt,
+        lastReceivedAt,
+        slot: 1,
+      });
+    }
+
+    // New schema - use member_pairs data
     let state: 'cooling' | 'oven' = 'cooling';
     let ovenRemainingSeconds = 0;
 
-    if (member.last_chomp_at) {
-      const elapsed = now - member.last_chomp_at;
+    if (memberPair.last_sent_at) {
+      const elapsed = now - memberPair.last_sent_at;
       if (elapsed < OVEN_SECONDS) {
         state = 'oven';
         ovenRemainingSeconds = OVEN_SECONDS - elapsed;
       }
     }
 
-    // Get relative time for last chomp (from pair, not individual member)
-    const lastSentAt = member.last_chomp_at ?? null;
-    const lastReceivedAt = member.last_received_at ?? pair?.last_chomp_at ?? null;
+    const lastSentAt = memberPair.last_sent_at ?? null;
+    const lastReceivedAt = memberPair.last_received_at ?? null;
     const lastChompRelative = getRelativeTime(lastReceivedAt ?? lastSentAt ?? null);
 
     return NextResponse.json<StatusResponse>({
@@ -146,6 +199,7 @@ export async function GET(request: NextRequest) {
       serverNow: now,
       lastSentAt,
       lastReceivedAt,
+      slot,
     });
   } catch (error) {
     console.error('Status error:', error);
@@ -156,6 +210,7 @@ export async function GET(request: NextRequest) {
       serverNow: Math.floor(Date.now() / 1000),
       lastSentAt: null,
       lastReceivedAt: null,
+      slot: 1,
     });
   }
 }

@@ -28,17 +28,39 @@ export interface Member {
   created_at: number;
 }
 
+// Junction table for dual-slot pairing support
+export interface MemberPair {
+  member_id: string;
+  pair_id: string;
+  slot: 1 | 2;
+  last_sent_at: number | null;
+  last_received_at: number | null;
+  created_at: number;
+}
+
+// Slot state for a single slot
+export interface SlotState {
+  lastSentAt: number | null;
+  lastReceivedAt: number | null;
+}
+
 // API request/response types
 export interface PairRequest {
-  code: string;
+  code?: string;
   deviceId: string;
+  slot?: 1 | 2;
 }
 
 export interface PairResponse {
-  success: boolean;
-  paired: boolean;
-  waiting?: boolean;
+  ok: boolean;
+  slot?: 1 | 2;
+  pairCode?: string;
+  slots?: { 1: boolean; 2: boolean };
   error?: string;
+  // Legacy fields for backward compatibility
+  success?: boolean;
+  paired?: boolean;
+  waiting?: boolean;
 }
 
 export interface ChompResponse {
@@ -46,6 +68,7 @@ export interface ChompResponse {
   ovenSeconds?: number;
   remainingSeconds?: number;
   error?: string;
+  slot?: 1 | 2;
 }
 
 export interface StatusResponse {
@@ -55,6 +78,7 @@ export interface StatusResponse {
   serverNow?: number;
   lastSentAt?: number | null;
   lastReceivedAt?: number | null;
+  slot?: 1 | 2;
 }
 
 export interface SubscribeRequest {
@@ -66,6 +90,13 @@ export interface MeResponse {
   paired: boolean;
   ovenRemainingSeconds: number;
   hasPartner: boolean;
+  // New slot-aware fields
+  serverNow?: number;
+  slots?: { 1: boolean; 2: boolean };
+  stateBySlot?: {
+    1?: SlotState;
+    2?: SlotState;
+  };
 }
 
 // Cloudflare D1 types

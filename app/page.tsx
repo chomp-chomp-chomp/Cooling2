@@ -5,15 +5,37 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 type AppState = "loading" | "install" | "pair" | "waiting" | "ready";
+type SlotNum = 1 | 2;
+
+interface SlotState {
+  lastSentAt: number | null;
+  lastReceivedAt: number | null;
+}
+
+interface SlotsInfo {
+  slots: { 1: boolean; 2: boolean };
+  stateBySlot: { 1?: SlotState; 2?: SlotState };
+}
 
 const OVEN_SECONDS = 108;
 
 export default function HomePage() {
   const [appState, setAppState] = useState<AppState>("loading");
+  const [activeSlot, setActiveSlot] = useState<SlotNum>(1);
+  const [slotsInfo, setSlotsInfo] = useState<SlotsInfo>({
+    slots: { 1: false, 2: false },
+    stateBySlot: {},
+  });
+
+  // Active slot state
   const [sentRemaining, setSentRemaining] = useState<number>(0);
   const [receivedRemaining, setReceivedRemaining] = useState<number>(0);
   const [lastSentAt, setLastSentAt] = useState<number | null>(null);
   const [lastReceivedAt, setLastReceivedAt] = useState<number | null>(null);
+
+  // Inactive slot state (for received ring indicator)
+  const [inactiveReceivedRemaining, setInactiveReceivedRemaining] = useState<number>(0);
+
   const [serverOffsetMs, setServerOffsetMs] = useState(0);
   const [lastChompRelative, setLastChompRelative] = useState<string>("never");
   const [isSending, setIsSending] = useState(false);
@@ -25,6 +47,10 @@ export default function HomePage() {
   const buzzAudioRef = useRef<HTMLAudioElement | null>(null);
   const prevReceivedRef = useRef<number>(0);
 
+  // Long press state
+  const longPressTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const [showSlotToast, setShowSlotToast] = useState(false);
+
   const logDebug = useCallback((message: string) => {
     const timestamp = new Date().toLocaleTimeString();
     setDebugLogs((prev) => [`[${timestamp}] ${message}`, ...prev].slice(0, 80));
@@ -35,6 +61,21 @@ export default function HomePage() {
     const params = new URLSearchParams(window.location.search);
     setDevMode(params.get("dev") === "1");
   }, []);
+
+  // Load activeSlot from localStorage
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const stored = localStorage.getItem("activeSlot");
+    if (stored === "2") {
+      setActiveSlot(2);
+    }
+  }, []);
+
+  // Save activeSlot to localStorage
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    localStorage.setItem("activeSlot", String(activeSlot));
+  }, [activeSlot]);
 
   // Initialize buzz audio
   useEffect(() => {
@@ -62,7 +103,6 @@ export default function HomePage() {
   }, [receivedRemaining, playBuzz]);
 
   // Check if running in standalone mode (installed PWA)
-  // Add ?dev=1 to URL to bypass for testing
   const isStandalone = useCallback(() => {
     if (typeof window === "undefined") return false;
     const params = new URLSearchParams(window.location.search);
@@ -80,15 +120,91 @@ export default function HomePage() {
       id = crypto.randomUUID();
       localStorage.setItem("deviceId", id);
     }
-    // Set cookie for API routes (expires in 1 year)
     document.cookie = `deviceId=${id}; path=/; max-age=31536000; SameSite=Strict`;
     setDeviceId(id);
   }, []);
 
-  // Fetch status from server
+  // Compute remaining seconds for both slots based on stateBySlot
+  const computeSlotRemaining = useCallback(
+    (slotState: SlotState | undefined, alignedNow: number) => {
+      if (!slotState) return { sent: 0, received: 0 };
+      const sent = slotState.lastSentAt
+        ? Math.max(0, OVEN_SECONDS - (alignedNow - slotState.lastSentAt))
+        : 0;
+      const received = slotState.lastReceivedAt
+        ? Math.max(0, OVEN_SECONDS - (alignedNow - slotState.lastReceivedAt))
+        : 0;
+      return { sent, received };
+    },
+    []
+  );
+
+  // Update slot remaining timers when slotsInfo or activeSlot changes
+  useEffect(() => {
+    const alignedNow = Math.floor((Date.now() + serverOffsetMs) / 1000);
+    const activeState = slotsInfo.stateBySlot[activeSlot];
+    const inactiveSlot: SlotNum = activeSlot === 1 ? 2 : 1;
+    const inactiveState = slotsInfo.stateBySlot[inactiveSlot];
+
+    if (activeState) {
+      const { sent, received } = computeSlotRemaining(activeState, alignedNow);
+      setSentRemaining(sent);
+      setReceivedRemaining(received);
+      setLastSentAt(activeState.lastSentAt);
+      setLastReceivedAt(activeState.lastReceivedAt);
+    }
+
+    if (inactiveState && slotsInfo.slots[inactiveSlot]) {
+      const { received } = computeSlotRemaining(inactiveState, alignedNow);
+      setInactiveReceivedRemaining(received);
+    } else {
+      setInactiveReceivedRemaining(0);
+    }
+  }, [slotsInfo, activeSlot, serverOffsetMs, computeSlotRemaining]);
+
+  // Fetch full status including all slots from /api/me
+  const fetchFullStatus = useCallback(async () => {
+    try {
+      const res = await fetch("/api/me");
+      if (!res.ok) {
+        const body = await res.text();
+        logDebug(`me failed (${res.status}) ${body}`);
+        return null;
+      }
+      const data: {
+        paired?: boolean;
+        hasPartner?: boolean;
+        serverNow?: number;
+        slots?: { 1: boolean; 2: boolean };
+        stateBySlot?: { 1?: SlotState; 2?: SlotState };
+      } = await res.json();
+
+      const serverNow = data.serverNow ?? Math.floor(Date.now() / 1000);
+      const offsetMs = serverNow * 1000 - Date.now();
+      setServerOffsetMs(offsetMs);
+
+      if (data.slots && data.stateBySlot) {
+        setSlotsInfo({
+          slots: data.slots,
+          stateBySlot: data.stateBySlot,
+        });
+      }
+
+      logDebug(
+        `me ok (paired=${data.paired ?? false}, hasPartner=${data.hasPartner ?? false}, slots=${JSON.stringify(data.slots)})`
+      );
+
+      return data;
+    } catch (e) {
+      logDebug("me failed (network)");
+      return null;
+    }
+  }, [logDebug]);
+
+  // Fetch status for active slot only
   const fetchStatus = useCallback(async () => {
     try {
-      const res = await fetch("/api/status");
+      const res = await fetch(`/api/status?slot=${activeSlot}`);
       if (!res.ok) {
         const body = await res.text();
         logDebug(`status failed (${res.status}) ${body}`);
@@ -101,37 +217,44 @@ export default function HomePage() {
         lastSentAt?: number | null;
         lastReceivedAt?: number | null;
       } = await res.json();
+
       const serverNow = data.serverNow ?? Math.floor(Date.now() / 1000);
       const offsetMs = serverNow * 1000 - Date.now();
       const alignedNow = Math.floor((Date.now() + offsetMs) / 1000);
       setServerOffsetMs(offsetMs);
       setLastSentAt(data.lastSentAt ?? null);
       setLastReceivedAt(data.lastReceivedAt ?? null);
+
       const sentRemainingSeconds = data.lastSentAt
         ? Math.max(0, OVEN_SECONDS - (alignedNow - data.lastSentAt))
         : 0;
       const receivedRemainingSeconds = data.lastReceivedAt
         ? Math.max(0, OVEN_SECONDS - (alignedNow - data.lastReceivedAt))
         : 0;
-      if (sentRemainingSeconds > 0) {
-        setSentRemaining(sentRemainingSeconds);
-      } else {
-        setSentRemaining(0);
-      }
-      if (receivedRemainingSeconds > 0) {
-        setReceivedRemaining(receivedRemainingSeconds);
-      } else {
-        setReceivedRemaining(0);
-      }
+
+      setSentRemaining(sentRemainingSeconds);
+      setReceivedRemaining(receivedRemainingSeconds);
       setLastChompRelative(data.lastChompRelative || "never");
+
+      // Update stateBySlot for active slot
+      setSlotsInfo((prev) => ({
+        ...prev,
+        stateBySlot: {
+          ...prev.stateBySlot,
+          [activeSlot]: {
+            lastSentAt: data.lastSentAt ?? null,
+            lastReceivedAt: data.lastReceivedAt ?? null,
+          },
+        },
+      }));
+
       logDebug(
-        `status ok (sentRemaining=${sentRemainingSeconds}, receivedRemaining=${receivedRemainingSeconds}, last=${data.lastChompRelative ?? "never"})`
+        `status ok (slot=${activeSlot}, sentRemaining=${sentRemainingSeconds}, receivedRemaining=${receivedRemainingSeconds})`
       );
     } catch (e) {
       logDebug("status failed (network)");
-      // Ignore
     }
-  }, [logDebug]);
+  }, [activeSlot, logDebug]);
 
   // Listen for service worker messages (push received while app is open)
   useEffect(() => {
@@ -139,23 +262,22 @@ export default function HomePage() {
     const handler = (event: MessageEvent) => {
       if (event.data?.type === "chomp-received") {
         playBuzz();
-        fetchStatus();
+        // Fetch full status to get both slots' state
+        fetchFullStatus();
       }
     };
     navigator.serviceWorker.addEventListener("message", handler);
     return () => navigator.serviceWorker.removeEventListener("message", handler);
-  }, [playBuzz, fetchStatus]);
+  }, [playBuzz, fetchFullStatus]);
 
   // Initialize app state
   useEffect(() => {
     async function init() {
-      // Check standalone mode
       if (!isStandalone()) {
         setAppState("install");
         return;
       }
 
-      // Register service worker and force update
       if ("serviceWorker" in navigator) {
         try {
           const reg = await navigator.serviceWorker.register("/sw.js");
@@ -165,34 +287,26 @@ export default function HomePage() {
         }
       }
 
-      // Check pairing status
-      try {
-        const res = await fetch("/api/me");
-        if (!res.ok) {
-          const body = await res.text();
-          logDebug(`me failed (${res.status}) ${body}`);
-          setAppState("pair");
-          return;
-        }
-        const data: { paired?: boolean; hasPartner?: boolean } = await res.json();
-        logDebug(`me ok (paired=${data.paired ?? false}, hasPartner=${data.hasPartner ?? false})`);
-
-        if (data.paired && data.hasPartner) {
-          setAppState("ready");
-          // Fetch status for oven state and last chomp
-          await fetchStatus();
-          // Subscribe to push notifications
-          await subscribeToPush();
-        } else if (data.paired && !data.hasPartner) {
-          setAppState("waiting");
-          const stored = localStorage.getItem("pairCode");
-          if (stored) setPairCode(stored);
-          await subscribeToPush();
-        } else {
-          setAppState("pair");
-        }
-      } catch (e) {
+      // Check pairing status and get slot info
+      const data = await fetchFullStatus();
+      if (!data) {
         logDebug("init failed; defaulting to pair (network)");
+        setAppState("pair");
+        return;
+      }
+
+      logDebug(`me ok (paired=${data.paired ?? false}, hasPartner=${data.hasPartner ?? false})`);
+
+      if (data.paired && data.hasPartner) {
+        setAppState("ready");
+        await fetchStatus();
+        await subscribeToPush();
+      } else if (data.paired && !data.hasPartner) {
+        setAppState("waiting");
+        const stored = localStorage.getItem("pairCode");
+        if (stored) setPairCode(stored);
+        await subscribeToPush();
+      } else {
         setAppState("pair");
       }
     }
@@ -200,7 +314,7 @@ export default function HomePage() {
     if (deviceId) {
       init();
     }
-  }, [deviceId, isStandalone, fetchStatus]);
+  }, [deviceId, isStandalone, fetchFullStatus, fetchStatus]);
 
   // Listen for visibility changes to refetch status
   useEffect(() => {
@@ -208,7 +322,7 @@ export default function HomePage() {
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === "visible") {
-        fetchStatus();
+        fetchFullStatus();
       }
     };
 
@@ -216,44 +330,61 @@ export default function HomePage() {
     return () => {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [appState, fetchStatus]);
+  }, [appState, fetchFullStatus]);
 
-  // Poll for status updates while app is open (detects incoming chomps)
+  // Poll for status updates while app is open
   useEffect(() => {
     if (appState !== "ready") return;
 
     const interval = setInterval(() => {
       if (document.visibilityState === "visible") {
-        fetchStatus();
+        fetchFullStatus();
       }
     }, 5000);
 
     return () => clearInterval(interval);
-  }, [appState, fetchStatus]);
+  }, [appState, fetchFullStatus]);
 
-  // Oven timer countdown
+  // Oven timer countdown for both slots
   useEffect(() => {
-    if (!lastSentAt && !lastReceivedAt) return;
+    const hasActiveState =
+      slotsInfo.stateBySlot[activeSlot]?.lastSentAt ||
+      slotsInfo.stateBySlot[activeSlot]?.lastReceivedAt;
+    const inactiveSlot: SlotNum = activeSlot === 1 ? 2 : 1;
+    const hasInactiveState =
+      slotsInfo.slots[inactiveSlot] &&
+      slotsInfo.stateBySlot[inactiveSlot]?.lastReceivedAt;
+
+    if (!hasActiveState && !hasInactiveState) return;
 
     const timer = setInterval(() => {
       const alignedNow = Math.floor((Date.now() + serverOffsetMs) / 1000);
-      const nextSent = lastSentAt
-        ? Math.max(0, OVEN_SECONDS - (alignedNow - lastSentAt))
-        : 0;
-      const nextReceived = lastReceivedAt
-        ? Math.max(0, OVEN_SECONDS - (alignedNow - lastReceivedAt))
-        : 0;
-      setSentRemaining(nextSent);
-      setReceivedRemaining(nextReceived);
+
+      // Update active slot
+      const activeState = slotsInfo.stateBySlot[activeSlot];
+      if (activeState) {
+        const nextSent = activeState.lastSentAt
+          ? Math.max(0, OVEN_SECONDS - (alignedNow - activeState.lastSentAt))
+          : 0;
+        const nextReceived = activeState.lastReceivedAt
+          ? Math.max(0, OVEN_SECONDS - (alignedNow - activeState.lastReceivedAt))
+          : 0;
+        setSentRemaining(nextSent);
+        setReceivedRemaining(nextReceived);
+      }
+
+      // Update inactive slot received remaining
+      const inactiveState = slotsInfo.stateBySlot[inactiveSlot];
+      if (inactiveState && slotsInfo.slots[inactiveSlot]) {
+        const nextInactiveReceived = inactiveState.lastReceivedAt
+          ? Math.max(0, OVEN_SECONDS - (alignedNow - inactiveState.lastReceivedAt))
+          : 0;
+        setInactiveReceivedRemaining(nextInactiveReceived);
+      }
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [lastSentAt, lastReceivedAt, serverOffsetMs]);
-
-  useEffect(() => {
-    if (!deviceId) return;
-    logDebug(`device ready (${deviceId.slice(0, 8)}...)`);
-  }, [deviceId, logDebug]);
+  }, [slotsInfo, activeSlot, serverOffsetMs]);
 
   useEffect(() => {
     if (!deviceId) return;
@@ -367,12 +498,26 @@ export default function HomePage() {
         logDebug(`pair failed (${res.status}) ${body}`);
         return;
       }
-      const data: { success?: boolean; paired?: boolean; waiting?: boolean } = await res.json();
+      const data: {
+        ok?: boolean;
+        success?: boolean;
+        paired?: boolean;
+        waiting?: boolean;
+        slot?: SlotNum;
+        slots?: { 1: boolean; 2: boolean };
+      } = await res.json();
 
-      if (data.success) {
+      if (data.ok || data.success) {
+        if (data.slots) {
+          setSlotsInfo((prev) => ({ ...prev, slots: data.slots! }));
+        }
+        if (data.slot) {
+          setActiveSlot(data.slot);
+        }
+
         if (data.paired) {
           setAppState("ready");
-          await fetchStatus();
+          await fetchFullStatus();
           await subscribeToPush();
         } else if (data.waiting) {
           setAppState("waiting");
@@ -380,7 +525,7 @@ export default function HomePage() {
           setPairCode(code);
           await subscribeToPush();
         }
-        logDebug(`pair ok (paired=${data.paired ?? false}, waiting=${data.waiting ?? false})`);
+        logDebug(`pair ok (paired=${data.paired ?? false}, waiting=${data.waiting ?? false}, slot=${data.slot})`);
       }
     } catch (e) {
       console.error("Pairing failed:", e);
@@ -414,13 +559,13 @@ export default function HomePage() {
     setIsSending(true);
 
     try {
-      const res = await fetch("/api/buzz", {
+      const res = await fetch(`/api/buzz?slot=${activeSlot}`, {
         method: "POST",
         headers: devMode ? { "x-debug": "1" } : undefined,
       });
 
       if (res.status === 429) {
-        const data = await res.json().catch(() => null) as { remainingSeconds?: number } | null;
+        const data = (await res.json().catch(() => null)) as { remainingSeconds?: number } | null;
         const remaining = Number(data?.remainingSeconds ?? 0);
         setSentRemaining(Math.max(0, remaining));
         logDebug(`chomp rate-limited (${remaining}s)`);
@@ -428,12 +573,25 @@ export default function HomePage() {
       }
 
       if (res.ok) {
-        const data = await res.json().catch(() => null) as { ovenSeconds?: number } | null;
+        const data = (await res.json().catch(() => null)) as { ovenSeconds?: number } | null;
         const oven = Number(data?.ovenSeconds ?? OVEN_SECONDS);
         setSentRemaining(oven);
         const alignedNow = Math.floor((Date.now() + serverOffsetMs) / 1000);
         setLastSentAt(alignedNow);
-        logDebug(`chomp ok (oven=${oven}s)`);
+
+        // Update stateBySlot for active slot
+        setSlotsInfo((prev) => ({
+          ...prev,
+          stateBySlot: {
+            ...prev.stateBySlot,
+            [activeSlot]: {
+              ...prev.stateBySlot[activeSlot],
+              lastSentAt: alignedNow,
+            },
+          },
+        }));
+
+        logDebug(`chomp ok (slot=${activeSlot}, oven=${oven}s)`);
       } else {
         const body = await res.text();
         logDebug(`chomp failed (${res.status}) ${body}`);
@@ -448,25 +606,45 @@ export default function HomePage() {
     if (appState !== "waiting") return;
 
     const interval = setInterval(async () => {
-      try {
-        const res = await fetch("/api/me");
-        const data: { paired?: boolean; hasPartner?: boolean } = await res.json();
-        if (data.paired && data.hasPartner) {
-          setAppState("ready");
-          await fetchStatus();
-          await subscribeToPush();
-          logDebug("partner joined");
-        }
-      } catch (e) {
-        logDebug("poll partner failed");
-        // Ignore
+      const data = await fetchFullStatus();
+      if (data?.paired && data?.hasPartner) {
+        setAppState("ready");
+        await fetchStatus();
+        await subscribeToPush();
+        logDebug("partner joined");
       }
     }, 3000);
 
     return () => clearInterval(interval);
-  }, [appState, deviceId, fetchStatus]);
+  }, [appState, deviceId, fetchFullStatus, fetchStatus]);
+
+  // Long press handling for slot switching
+  const handleCookiePressStart = useCallback(() => {
+    // Only enable if slot 2 exists
+    if (!slotsInfo.slots[2]) return;
+
+    longPressTimerRef.current = setTimeout(() => {
+      // Toggle active slot
+      const newSlot: SlotNum = activeSlot === 1 ? 2 : 1;
+      setActiveSlot(newSlot);
+      setShowSlotToast(true);
+      logDebug(`switched to slot ${newSlot}`);
+
+      // Hide toast after 700ms
+      setTimeout(() => setShowSlotToast(false), 700);
+    }, 500); // Long press threshold: 500ms
+  }, [slotsInfo.slots, activeSlot, logDebug]);
+
+  const handleCookiePressEnd = useCallback(() => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  }, []);
 
   const inOven = sentRemaining > 0;
+  const hasSlot2 = slotsInfo.slots[2];
+
   const debugPanel = devMode ? (
     <section style={styles.debugPanel}>
       <div style={styles.debugTitle}>Debug log</div>
@@ -619,6 +797,12 @@ export default function HomePage() {
         <button
           type="button"
           onClick={handleChomp}
+          onMouseDown={handleCookiePressStart}
+          onMouseUp={handleCookiePressEnd}
+          onMouseLeave={handleCookiePressEnd}
+          onTouchStart={handleCookiePressStart}
+          onTouchEnd={handleCookiePressEnd}
+          onTouchCancel={handleCookiePressEnd}
           disabled={inOven || isSending}
           aria-disabled={inOven || isSending}
           style={{
@@ -646,6 +830,44 @@ export default function HomePage() {
             />
           ) : null}
         </button>
+
+        {/* Orientation dots - only shown when slot 2 exists */}
+        {hasSlot2 && (
+          <div style={styles.dotsContainer}>
+            {/* Slot 1 dot */}
+            <div style={styles.dotWrapper}>
+              <div
+                style={{
+                  ...styles.dot,
+                  ...(activeSlot === 1 ? styles.dotActive : styles.dotInactive),
+                }}
+              />
+              {/* Ring around inactive dot if it has received */}
+              {activeSlot === 2 && inactiveReceivedRemaining > 0 && (
+                <div style={styles.dotRing} />
+              )}
+            </div>
+
+            {/* Slot 2 dot */}
+            <div style={styles.dotWrapper}>
+              <div
+                style={{
+                  ...styles.dot,
+                  ...(activeSlot === 2 ? styles.dotActive : styles.dotInactive),
+                }}
+              />
+              {/* Ring around inactive dot if it has received */}
+              {activeSlot === 1 && inactiveReceivedRemaining > 0 && (
+                <div style={styles.dotRing} />
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Slot switch toast */}
+        {showSlotToast && (
+          <div style={styles.slotToast}>another cooling</div>
+        )}
 
         <div style={styles.statusWrap}>
           <div style={styles.status}>
@@ -829,5 +1051,59 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 12,
     opacity: 0.5,
     marginTop: 8,
+  },
+  // Orientation dots styles
+  dotsContainer: {
+    display: "flex",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    marginTop: 8,
+  },
+  dotWrapper: {
+    position: "relative",
+    width: 10,
+    height: 10,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  dot: {
+    width: 5,
+    height: 5,
+    borderRadius: "50%",
+    transition: "opacity 150ms ease, background-color 150ms ease",
+  },
+  dotActive: {
+    backgroundColor: "#111",
+    opacity: 0.7,
+  },
+  dotInactive: {
+    backgroundColor: "transparent",
+    border: "1px solid rgba(0, 0, 0, 0.3)",
+    opacity: 0.5,
+  },
+  dotRing: {
+    position: "absolute",
+    width: 10,
+    height: 10,
+    borderRadius: "50%",
+    border: "1px solid rgba(0, 0, 0, 0.4)",
+    opacity: 0.4,
+    pointerEvents: "none",
+    animation: "fadeIn 150ms ease",
+  },
+  slotToast: {
+    position: "absolute",
+    bottom: 180,
+    left: "50%",
+    transform: "translateX(-50%)",
+    fontSize: 13,
+    opacity: 0.7,
+    padding: "8px 16px",
+    background: "rgba(0, 0, 0, 0.05)",
+    borderRadius: 6,
+    pointerEvents: "none",
   },
 };
