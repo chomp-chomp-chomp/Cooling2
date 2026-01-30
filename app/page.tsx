@@ -18,6 +18,7 @@ interface SlotsInfo {
 }
 
 const OVEN_SECONDS = 108;
+const LONG_PRESS_MS = 500;
 
 export default function HomePage() {
   const [appState, setAppState] = useState<AppState>("loading");
@@ -33,7 +34,7 @@ export default function HomePage() {
   const [lastSentAt, setLastSentAt] = useState<number | null>(null);
   const [lastReceivedAt, setLastReceivedAt] = useState<number | null>(null);
 
-  // Inactive slot state (for received ring indicator)
+  // Inactive slot state (for received ring indicator on dots)
   const [inactiveReceivedRemaining, setInactiveReceivedRemaining] = useState<number>(0);
 
   const [serverOffsetMs, setServerOffsetMs] = useState(0);
@@ -47,9 +48,10 @@ export default function HomePage() {
   const buzzAudioRef = useRef<HTMLAudioElement | null>(null);
   const prevReceivedRef = useRef<number>(0);
 
-  // Long press state
+  // Long press state for robust detection
   const longPressTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const [showSlotToast, setShowSlotToast] = useState(false);
+  const longPressFiredRef = useRef<boolean>(false);
+  const pressStartPosRef = useRef<{ x: number; y: number } | null>(null);
   const [showHintToast, setShowHintToast] = useState(false);
 
   // Pending slot for second pairing (set from Notes page link or hint toast)
@@ -642,22 +644,16 @@ export default function HomePage() {
   }, [appState, deviceId, fetchFullStatus, fetchStatus]);
 
   // Long press handling for slot switching or hint
-  const handleCookiePressStart = useCallback(() => {
-    // If slot 2 exists, long-press switches slots
-    if (slotsInfo.slots[2]) {
-      longPressTimerRef.current = setTimeout(() => {
-        const newSlot: SlotNum = activeSlot === 1 ? 2 : 1;
-        setActiveSlot(newSlot);
-        setShowSlotToast(true);
-        logDebug(`switched to slot ${newSlot}`);
-
-        // Hide toast after 700ms
-        setTimeout(() => setShowSlotToast(false), 700);
-      }, 500);
+  const handleLongPressAction = useCallback(() => {
+    // If both slots filled, long-press switches slots
+    if (slotsInfo.slots[1] && slotsInfo.slots[2]) {
+      const newSlot: SlotNum = activeSlot === 1 ? 2 : 1;
+      setActiveSlot(newSlot);
+      logDebug(`switched to slot ${newSlot}`);
       return;
     }
 
-    // Slot 2 doesn't exist - check if hint has been shown
+    // Only slot 1 exists - check if hint has been shown
     const hintShown = localStorage.getItem("seenSecondCoolingHint") === "true";
     if (hintShown) {
       // Hint already shown, do nothing
@@ -665,21 +661,63 @@ export default function HomePage() {
     }
 
     // Show the one-time hint
-    longPressTimerRef.current = setTimeout(() => {
-      setShowHintToast(true);
-      localStorage.setItem("seenSecondCoolingHint", "true");
-      logDebug("showed second cooling hint");
+    setShowHintToast(true);
+    localStorage.setItem("seenSecondCoolingHint", "true");
+    logDebug("showed second cooling hint");
 
-      // Hide toast after 700ms
-      setTimeout(() => setShowHintToast(false), 700);
-    }, 500);
+    // Hide toast after 700ms
+    setTimeout(() => setShowHintToast(false), 700);
   }, [slotsInfo.slots, activeSlot, logDebug]);
 
-  const handleCookiePressEnd = useCallback(() => {
+  const handleCookiePointerDown = useCallback((e: React.PointerEvent) => {
+    // Capture pointer for reliable tracking
+    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+
+    longPressFiredRef.current = false;
+    pressStartPosRef.current = { x: e.clientX, y: e.clientY };
+
+    longPressTimerRef.current = setTimeout(() => {
+      longPressFiredRef.current = true;
+      handleLongPressAction();
+    }, LONG_PRESS_MS);
+  }, [handleLongPressAction]);
+
+  const handleCookiePointerUp = useCallback((e: React.PointerEvent) => {
+    (e.target as HTMLElement).releasePointerCapture?.(e.pointerId);
+
     if (longPressTimerRef.current) {
       clearTimeout(longPressTimerRef.current);
       longPressTimerRef.current = null;
     }
+    pressStartPosRef.current = null;
+  }, []);
+
+  const handleCookiePointerMove = useCallback((e: React.PointerEvent) => {
+    // Cancel long press if moved more than 10px
+    if (pressStartPosRef.current && longPressTimerRef.current) {
+      const dx = e.clientX - pressStartPosRef.current.x;
+      const dy = e.clientY - pressStartPosRef.current.y;
+      if (Math.sqrt(dx * dx + dy * dy) > 10) {
+        clearTimeout(longPressTimerRef.current);
+        longPressTimerRef.current = null;
+      }
+    }
+  }, []);
+
+  const handleCookieClick = useCallback((e: React.MouseEvent) => {
+    // If long press fired, swallow the click
+    if (longPressFiredRef.current) {
+      e.preventDefault();
+      e.stopPropagation();
+      longPressFiredRef.current = false;
+      return;
+    }
+    // Normal tap - do chomp
+    handleChomp();
+  }, []);
+
+  const handleCookieContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
   }, []);
 
   // Handle tapping the hint toast to go to pairing for slot 2
@@ -691,7 +729,21 @@ export default function HomePage() {
   }, [logDebug]);
 
   const inOven = sentRemaining > 0;
-  const hasSlot2 = slotsInfo.slots[2];
+  const hasBothSlots = slotsInfo.slots[1] && slotsInfo.slots[2];
+
+  // Compute received remaining for each slot (for dot rings)
+  const slot1ReceivedRemaining = (() => {
+    const state = slotsInfo.stateBySlot[1];
+    if (!state?.lastReceivedAt) return 0;
+    const alignedNow = Math.floor((Date.now() + serverOffsetMs) / 1000);
+    return Math.max(0, OVEN_SECONDS - (alignedNow - state.lastReceivedAt));
+  })();
+  const slot2ReceivedRemaining = (() => {
+    const state = slotsInfo.stateBySlot[2];
+    if (!state?.lastReceivedAt) return 0;
+    const alignedNow = Math.floor((Date.now() + serverOffsetMs) / 1000);
+    return Math.max(0, OVEN_SECONDS - (alignedNow - state.lastReceivedAt));
+  })();
 
   const debugPanel = devMode ? (
     <section style={styles.debugPanel}>
@@ -844,43 +896,36 @@ export default function HomePage() {
       <div style={styles.centerWrap}>
         <button
           type="button"
-          onClick={handleChomp}
-          onMouseDown={handleCookiePressStart}
-          onMouseUp={handleCookiePressEnd}
-          onMouseLeave={handleCookiePressEnd}
-          onTouchStart={handleCookiePressStart}
-          onTouchEnd={handleCookiePressEnd}
-          onTouchCancel={handleCookiePressEnd}
+          onClick={handleCookieClick}
+          onPointerDown={handleCookiePointerDown}
+          onPointerUp={handleCookiePointerUp}
+          onPointerCancel={handleCookiePointerUp}
+          onPointerMove={handleCookiePointerMove}
+          onContextMenu={handleCookieContextMenu}
           disabled={inOven || isSending}
           aria-disabled={inOven || isSending}
+          aria-label="Chomp"
           style={{
-            ...styles.heartButton,
+            ...styles.cookieButton,
+            backgroundImage: `url(${inOven ? "/heart-cookie.png" : "/round-cookie.png"})`,
             transform: isSending ? "scale(0.98)" : "scale(1)",
             opacity: inOven ? 0.7 : 1,
           }}
         >
-          <Image
-            src={inOven ? "/heart-cookie.png" : "/round-cookie.png"}
-            alt="Cookie"
-            width={240}
-            height={240}
-            priority
-            style={styles.heartImage as React.CSSProperties}
-          />
-          {receivedRemaining > 0 ? (
-            <Image
-              src="/heart-cookie.png"
-              alt="Received chomp"
-              width={48}
-              height={48}
-              priority
-              style={styles.receivedBadge as React.CSSProperties}
+          {/* Received badge - small heart in corner */}
+          {receivedRemaining > 0 && (
+            <div
+              style={{
+                ...styles.receivedBadge,
+                backgroundImage: "url(/heart-cookie.png)",
+              }}
+              aria-label="Received chomp"
             />
-          ) : null}
+          )}
         </button>
 
-        {/* Orientation dots - only shown when slot 2 exists, tappable to switch */}
-        {hasSlot2 && (
+        {/* Orientation dots - only shown when BOTH slots are filled, tappable to switch */}
+        {hasBothSlots && (
           <div style={styles.dotsContainer}>
             {/* Slot 1 dot - tap to switch */}
             <button
@@ -888,8 +933,6 @@ export default function HomePage() {
               onClick={() => {
                 if (activeSlot !== 1) {
                   setActiveSlot(1);
-                  setShowSlotToast(true);
-                  setTimeout(() => setShowSlotToast(false), 1200);
                 }
               }}
               style={styles.dotButton}
@@ -901,8 +944,8 @@ export default function HomePage() {
                   ...(activeSlot === 1 ? styles.dotActive : styles.dotInactive),
                 }}
               />
-              {/* Ring around inactive dot if it has received */}
-              {activeSlot === 2 && inactiveReceivedRemaining > 0 && (
+              {/* Ring around dot if slot 1 has received */}
+              {slot1ReceivedRemaining > 0 && (
                 <div style={styles.dotRing} />
               )}
             </button>
@@ -913,8 +956,6 @@ export default function HomePage() {
               onClick={() => {
                 if (activeSlot !== 2) {
                   setActiveSlot(2);
-                  setShowSlotToast(true);
-                  setTimeout(() => setShowSlotToast(false), 1200);
                 }
               }}
               style={styles.dotButton}
@@ -926,17 +967,12 @@ export default function HomePage() {
                   ...(activeSlot === 2 ? styles.dotActive : styles.dotInactive),
                 }}
               />
-              {/* Ring around inactive dot if it has received */}
-              {activeSlot === 1 && inactiveReceivedRemaining > 0 && (
+              {/* Ring around dot if slot 2 has received */}
+              {slot2ReceivedRemaining > 0 && (
                 <div style={styles.dotRing} />
               )}
             </button>
           </div>
-        )}
-
-        {/* Slot switch toast */}
-        {showSlotToast && (
-          <div style={styles.slotToast}>another cooling</div>
         )}
 
         {/* One-time hint toast (tappable to go to pairing) */}
@@ -976,9 +1012,9 @@ function formatCode(code: string): string {
 
 const styles: Record<string, React.CSSProperties> = {
   page: {
-    background: "#ffffff",
+    background: "var(--bg)",
     minHeight: "100vh",
-    color: "#111",
+    color: "var(--text)",
     display: "flex",
     flexDirection: "column",
   },
@@ -991,29 +1027,36 @@ const styles: Record<string, React.CSSProperties> = {
     padding: "24px 18px",
     gap: 14,
   },
-  heartButton: {
+  cookieButton: {
+    width: 240,
+    height: 240,
     border: "none",
     background: "transparent",
+    backgroundSize: "contain",
+    backgroundRepeat: "no-repeat",
+    backgroundPosition: "center",
     padding: 0,
     cursor: "pointer",
     transition:
       "transform 120ms cubic-bezier(0.2, 0.0, 0.0, 1.0), opacity 120ms linear",
     position: "relative",
     WebkitTapHighlightColor: "transparent",
-    touchAction: "manipulation",
-  },
-  heartImage: {
-    display: "block",
-    userSelect: "none",
     WebkitTouchCallout: "none",
-    pointerEvents: "none",
-  },
+    WebkitUserSelect: "none",
+    userSelect: "none",
+    touchAction: "manipulation",
+    // Prevent iOS image drag
+    WebkitUserDrag: "none",
+  } as React.CSSProperties,
   receivedBadge: {
     position: "absolute",
     top: 8,
     right: 8,
     width: 48,
     height: 48,
+    backgroundSize: "contain",
+    backgroundRepeat: "no-repeat",
+    backgroundPosition: "center",
     pointerEvents: "none",
   },
   statusWrap: {
@@ -1024,11 +1067,11 @@ const styles: Record<string, React.CSSProperties> = {
   },
   status: {
     fontSize: 14,
-    opacity: 0.85,
+    color: "var(--text)",
   },
   lastChomp: {
     fontSize: 12,
-    opacity: 0.55,
+    color: "var(--muted-text)",
   },
   footer: {
     padding: "16px 18px",
@@ -1037,21 +1080,20 @@ const styles: Record<string, React.CSSProperties> = {
   },
   footerLink: {
     fontSize: 13,
-    opacity: 0.7,
     textDecoration: "none",
-    color: "inherit",
+    color: "var(--muted-text)",
   },
   footerSep: {
     fontSize: 13,
-    opacity: 0.4,
+    color: "var(--faint-text)",
     margin: "0 8px",
   },
   debugPanel: {
-    borderTop: "1px solid rgba(0, 0, 0, 0.1)",
+    borderTop: "1px solid var(--rule)",
     padding: "12px 18px 20px",
     fontSize: 12,
-    background: "#fafafa",
-    color: "#222",
+    background: "var(--surface)",
+    color: "var(--text)",
   },
   debugTitle: {
     fontWeight: 600,
@@ -1064,7 +1106,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   installHint: {
     fontSize: 12,
-    opacity: 0.6,
+    color: "var(--muted-text)",
     textAlign: "center",
     maxWidth: 240,
     marginTop: 8,
@@ -1078,14 +1120,14 @@ const styles: Record<string, React.CSSProperties> = {
   },
   pairLabel: {
     fontSize: 14,
-    opacity: 0.75,
+    color: "var(--muted-text)",
   },
   pairInput: {
     fontSize: 20,
     fontFamily: "monospace",
     textAlign: "center",
     padding: "12px 16px",
-    border: "1px solid rgba(0,0,0,0.15)",
+    border: "1px solid var(--input-border)",
     borderRadius: 8,
     outline: "none",
     width: 180,
@@ -1094,14 +1136,14 @@ const styles: Record<string, React.CSSProperties> = {
   pairButton: {
     fontSize: 14,
     padding: "10px 24px",
-    border: "1px solid rgba(0,0,0,0.2)",
+    border: "1px solid var(--button-border)",
     borderRadius: 6,
-    background: "#fff",
+    background: "var(--bg)",
     cursor: "pointer",
   },
   dividerText: {
     fontSize: 12,
-    opacity: 0.5,
+    color: "var(--faint-text)",
     margin: "16px 0",
   },
   generateButton: {
@@ -1109,7 +1151,7 @@ const styles: Record<string, React.CSSProperties> = {
     padding: "10px 20px",
     border: "none",
     borderRadius: 6,
-    background: "rgba(0,0,0,0.06)",
+    background: "var(--surface-hover)",
     cursor: "pointer",
   },
   waitingSection: {
@@ -1121,19 +1163,19 @@ const styles: Record<string, React.CSSProperties> = {
   },
   waitingLabel: {
     fontSize: 14,
-    opacity: 0.75,
+    color: "var(--muted-text)",
   },
   codeDisplay: {
     fontSize: 28,
     fontFamily: "monospace",
     letterSpacing: 3,
     padding: "16px 24px",
-    background: "rgba(0,0,0,0.03)",
+    background: "var(--surface)",
     borderRadius: 8,
   },
   waitingHint: {
     fontSize: 12,
-    opacity: 0.5,
+    color: "var(--faint-text)",
     marginTop: 8,
   },
   // Orientation dots styles
@@ -1165,34 +1207,18 @@ const styles: Record<string, React.CSSProperties> = {
     transition: "opacity 150ms ease, background-color 150ms ease",
   },
   dotActive: {
-    backgroundColor: "#111",
-    opacity: 0.7,
+    backgroundColor: "var(--dot-active)",
   },
   dotInactive: {
     backgroundColor: "transparent",
-    border: "1px solid rgba(0, 0, 0, 0.3)",
-    opacity: 0.5,
+    border: "1px solid var(--dot-inactive)",
   },
   dotRing: {
     position: "absolute",
     width: 10,
     height: 10,
     borderRadius: "50%",
-    border: "1px solid rgba(0, 0, 0, 0.4)",
-    opacity: 0.4,
-    pointerEvents: "none",
-    animation: "fadeIn 150ms ease",
-  },
-  slotToast: {
-    position: "absolute",
-    bottom: 180,
-    left: "50%",
-    transform: "translateX(-50%)",
-    fontSize: 13,
-    opacity: 0.7,
-    padding: "8px 16px",
-    background: "rgba(0, 0, 0, 0.05)",
-    borderRadius: 6,
+    border: "1px solid var(--dot-ring)",
     pointerEvents: "none",
   },
   hintToast: {
@@ -1201,12 +1227,11 @@ const styles: Record<string, React.CSSProperties> = {
     left: "50%",
     transform: "translateX(-50%)",
     fontSize: 13,
-    opacity: 0.7,
     padding: "8px 16px",
-    background: "rgba(0, 0, 0, 0.05)",
+    background: "var(--surface)",
     borderRadius: 6,
     border: "none",
     cursor: "pointer",
-    color: "inherit",
+    color: "var(--muted-text)",
   },
 };

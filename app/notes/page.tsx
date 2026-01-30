@@ -123,23 +123,32 @@ No explanation will be provided.
 Nothing here is meant to solve anything.
 `;
 
-const ANTI_FAQ_MD = `What does the buzz mean?
+// Anti-FAQ content split for conditional Q&A
+const ANTI_FAQ_BEFORE = `What does the buzz mean?
 Nothing specific.
 
-Why can’t I send another buzz right away?
+Why can't I send another buzz right away?
 Because you already sent one.
 
 Can they see that I buzzed?
 They feel it.
 
-Why isn’t there a reply button?
+Why isn't there a reply button?
 Replies turn signals into negotiations.
 
-What if they don’t buzz back?
-Then nothing happens.
+What if they don't buzz back?
+Then nothing happens.`;
+
+// This Q&A only shows when slot 2 doesn't exist
+const ANTI_FAQ_ROMANTIC = `
 
 Is this for romantic partners?
 It is for people who can tolerate ambiguity.
+
+What is ambiguous?
+`;
+
+const ANTI_FAQ_AFTER = `
 
 Can I customize the messages?
 No.
@@ -151,8 +160,7 @@ Is this supposed to fix something?
 No.
 `;
 
-// Known Issues content split for inserting "Another Cooling is possible." link
-const KNOWN_ISSUES_BEFORE = `Buzzes are ambiguous.
+const KNOWN_ISSUES_MD = `Buzzes are ambiguous.
 This will not be fixed.
 
 The other person may not respond.
@@ -171,10 +179,9 @@ Some users report relief after buzzing.
 Some report anxiety.
 Both are unplanned side effects.
 
-The app only supports two people.
-This is a structural limit.`;
+The app only supports two people, at a time.
+This is a structural limit.
 
-const KNOWN_ISSUES_AFTER = `
 There is no correct way to use the app.
 This is intentional.
 
@@ -198,8 +205,8 @@ export default function Notes() {
       { key: "readme", title: "README", content: README_MD, defaultOpen: true },
       { key: "versionNotes", title: "Version Notes", content: VERSION_NOTES_MD },
       { key: "tos", title: "ToS", content: TOS_MD },
-      { key: "antiFaq", title: "Anti-FAQ", content: ANTI_FAQ_MD },
-      { key: "knownIssues", title: "Known Issues", content: "" }, // Special rendering
+      { key: "antiFaq", title: "Anti-FAQ", content: "" }, // Special rendering for conditional Q&A
+      { key: "knownIssues", title: "Known Issues", content: KNOWN_ISSUES_MD },
     ],
     []
   );
@@ -309,23 +316,23 @@ export default function Notes() {
                 >
                   <div style={styles.panelInner}>
                     <div style={styles.panelContent}>
-                      {/* Special rendering for Known Issues with inline link */}
-                      {s.key === "knownIssues" ? (
+                      {/* Special rendering for Anti-FAQ with conditional Q&A */}
+                      {s.key === "antiFaq" ? (
                         <div style={styles.textBlock}>
-                          {KNOWN_ISSUES_BEFORE}
+                          {ANTI_FAQ_BEFORE}
                           {!bothSlotsFilled && (
                             <>
-                              {"\n"}
+                              {ANTI_FAQ_ROMANTIC}
                               <button
                                 type="button"
                                 onClick={handleAnotherCooling}
                                 style={styles.inlineLink}
                               >
-                                Another Cooling is possible.
+                                There is another Cooling.
                               </button>
                             </>
                           )}
-                          {KNOWN_ISSUES_AFTER}
+                          {ANTI_FAQ_AFTER}
                         </div>
                       ) : (
                         <div style={styles.textBlock}>{s.content}</div>
@@ -358,9 +365,9 @@ export default function Notes() {
  */
 const styles: Record<string, React.CSSProperties> = {
   page: {
-    background: "#ffffff",
+    background: "var(--bg)",
     minHeight: "100vh",
-    color: "#111",
+    color: "var(--text)",
   },
   container: {
     maxWidth: 680,
@@ -373,8 +380,7 @@ const styles: Record<string, React.CSSProperties> = {
   backLink: {
     fontSize: 13,
     textDecoration: "none",
-    color: "inherit",
-    opacity: 0.6,
+    color: "var(--muted-text)",
   },
   h1: {
     fontSize: 20,
@@ -384,11 +390,11 @@ const styles: Record<string, React.CSSProperties> = {
   },
   accordion: {
     borderRadius: 12,
-    border: "1px solid rgba(0,0,0,0.08)",
+    border: "1px solid var(--rule)",
     overflow: "hidden",
   },
   item: {
-    background: "#fff",
+    background: "var(--bg)",
   },
   itemFirst: {},
   rowButton: {
@@ -413,14 +419,14 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 16,
     lineHeight: "16px",
     transition: "transform 180ms cubic-bezier(0.2, 0.0, 0.0, 1.0)",
-    opacity: 0.85,
+    color: "var(--muted-text)",
   },
   microcopyWrap: {
     padding: "0 14px 6px",
   },
   microcopy: {
     fontSize: 12.5,
-    opacity: 0.6,
+    color: "var(--muted-text)",
   },
   panelOuter: {
     display: "grid",
@@ -436,11 +442,10 @@ const styles: Record<string, React.CSSProperties> = {
     whiteSpace: "pre-wrap",
     lineHeight: 1.5,
     fontSize: 14,
-    opacity: 0.95,
   },
   divider: {
     height: 1,
-    background: "rgba(0,0,0,0.06)",
+    background: "var(--rule)",
   },
   fixLink: {
     marginTop: 24,
@@ -449,20 +454,18 @@ const styles: Record<string, React.CSSProperties> = {
   subtleLink: {
     fontSize: 13,
     textDecoration: "none",
-    color: "inherit",
-    opacity: 0.5,
+    color: "var(--faint-text)",
   },
   inlineLink: {
     fontSize: 14,
     lineHeight: 1.5,
     color: "inherit",
-    opacity: 0.95,
     background: "none",
     border: "none",
     padding: 0,
     cursor: "pointer",
     textDecoration: "underline",
-    textDecorationColor: "rgba(0, 0, 0, 0.3)",
+    textDecorationColor: "var(--muted-text)",
     textUnderlineOffset: "2px",
   },
 };
