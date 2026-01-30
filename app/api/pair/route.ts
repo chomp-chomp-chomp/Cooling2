@@ -40,55 +40,36 @@ export async function POST(request: NextRequest) {
       return response;
     }
 
-    // Get or create member
+    // Get existing member (if any)
     let member = await db
       .prepare('SELECT * FROM members WHERE device_id = ?')
       .bind(deviceId)
       .first<Member>();
 
-    if (!member) {
-      // Create member (without pair_id for now - we'll use member_pairs)
-      const memberId = generateId();
-      // We still need pair_id in members for legacy compatibility, use a placeholder
-      await db
-        .prepare('INSERT INTO members (id, device_id, pair_id) VALUES (?, ?, ?)')
-        .bind(memberId, deviceId, 'placeholder')
-        .run();
-      member = await db
-        .prepare('SELECT * FROM members WHERE device_id = ?')
-        .bind(deviceId)
-        .first<Member>();
-    }
-
-    if (!member) {
-      return NextResponse.json<PairResponse>(
-        { ok: false, success: false, paired: false, error: 'Failed to create member' },
-        { status: 500 }
-      );
-    }
-
-    // Check existing member_pairs
+    // Check existing member_pairs (if member exists)
     let existingPairs: MemberPair[] = [];
     let useLegacySchema = false;
 
-    try {
-      const result = await db
-        .prepare('SELECT * FROM member_pairs WHERE member_id = ? ORDER BY slot')
-        .bind(member.id)
-        .all<MemberPair>();
-      existingPairs = result.results || [];
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (message.includes('no such table: member_pairs')) {
-        useLegacySchema = true;
-      } else {
-        throw error;
+    if (member) {
+      try {
+        const result = await db
+          .prepare('SELECT * FROM member_pairs WHERE member_id = ? ORDER BY slot')
+          .bind(member.id)
+          .all<MemberPair>();
+        existingPairs = result.results || [];
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.includes('no such table: member_pairs')) {
+          useLegacySchema = true;
+        } else {
+          throw error;
+        }
       }
-    }
 
-    // Handle legacy schema - convert to new schema behavior
-    if (useLegacySchema) {
-      return handleLegacyPairing(request, db, member, code, deviceId);
+      // Handle legacy schema
+      if (useLegacySchema) {
+        return handleLegacyPairing(request, db, member, code, deviceId);
+      }
     }
 
     // Determine slot to use
@@ -101,22 +82,22 @@ export async function POST(request: NextRequest) {
       // Check if requested slot is already filled
       if ((targetSlot === 1 && slot1Exists) || (targetSlot === 2 && slot2Exists)) {
         // Slot already has a pairing - check if it's same code or different
-        const existingPair = existingPairs.find(mp => mp.slot === targetSlot);
-        if (existingPair && code) {
+        const existingMemberPair = existingPairs.find(mp => mp.slot === targetSlot);
+        if (existingMemberPair && code) {
           const codeHash = await sha256(code.toUpperCase().replace(/-/g, ''));
           const pair = await db
             .prepare('SELECT * FROM pairs WHERE id = ?')
-            .bind(existingPair.pair_id)
+            .bind(existingMemberPair.pair_id)
             .first<Pair>();
           if (pair && pair.pair_code_hash === codeHash) {
             // Same pairing, return current state
-            return returnCurrentState(db, member, existingPairs, deviceId);
+            return returnCurrentState(db, member!, existingPairs, deviceId);
           }
         }
         // Different pairing for existing slot - replace it
         await db
           .prepare('DELETE FROM member_pairs WHERE member_id = ? AND slot = ?')
-          .bind(member.id, targetSlot)
+          .bind(member!.id, targetSlot)
           .run();
       }
     } else {
@@ -133,7 +114,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // If no code provided, generate one and create a new pair
+    // Generate or validate code and get/create pair
     let pairCode: string | undefined;
     let normalizedCode: string;
     let codeHash: string;
@@ -154,7 +135,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Check if pair already exists with this code
-    const existingPair = await db
+    let existingPair = await db
       .prepare('SELECT * FROM pairs WHERE pair_code_hash = ?')
       .bind(codeHash)
       .first<Pair>();
@@ -166,10 +147,12 @@ export async function POST(request: NextRequest) {
       pairId = existingPair.id;
 
       // Check if we're already in this pair (in any slot)
-      const alreadyInPair = existingPairs.some(mp => mp.pair_id === pairId);
-      if (alreadyInPair) {
-        // Just return current state
-        return returnCurrentState(db, member, existingPairs, deviceId);
+      if (member) {
+        const alreadyInPair = existingPairs.some(mp => mp.pair_id === pairId);
+        if (alreadyInPair) {
+          // Just return current state
+          return returnCurrentState(db, member, existingPairs, deviceId);
+        }
       }
 
       // Check how many members are in this pair
@@ -195,6 +178,26 @@ export async function POST(request: NextRequest) {
         .prepare('INSERT INTO pairs (id, pair_code_hash) VALUES (?, ?)')
         .bind(pairId, codeHash)
         .run();
+    }
+
+    // Now create member if it doesn't exist (we now have a valid pairId)
+    if (!member) {
+      const memberId = generateId();
+      await db
+        .prepare('INSERT INTO members (id, device_id, pair_id) VALUES (?, ?, ?)')
+        .bind(memberId, deviceId, pairId)
+        .run();
+      member = await db
+        .prepare('SELECT * FROM members WHERE device_id = ?')
+        .bind(deviceId)
+        .first<Member>();
+
+      if (!member) {
+        return NextResponse.json<PairResponse>(
+          { ok: false, success: false, paired: false, error: 'Failed to create member' },
+          { status: 500 }
+        );
+      }
     }
 
     // Add member_pair entry
@@ -299,7 +302,7 @@ async function returnCurrentState(
 
 // Legacy schema handling (before member_pairs migration)
 async function handleLegacyPairing(
-  request: NextRequest,
+  _request: NextRequest,
   db: Env['DB'],
   member: Member,
   code: string | undefined,
@@ -346,7 +349,7 @@ async function handleLegacyPairing(
   const codeHash = await sha256(normalizedCode);
 
   // Check if already paired
-  if (member.pair_id && member.pair_id !== 'placeholder') {
+  if (member.pair_id) {
     const partner = await db
       .prepare('SELECT * FROM members WHERE pair_id = ? AND device_id != ?')
       .bind(member.pair_id, deviceId)
