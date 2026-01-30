@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getRequestContext } from '@cloudflare/next-on-pages';
-import type { Env, Member } from '@/lib/types';
+import type { Env, Member, MemberPair } from '@/lib/types';
 
 export const runtime = 'edge';
 
@@ -12,6 +12,8 @@ export async function GET(request: NextRequest) {
   }
 
   try {
+    const slotParam = request.nextUrl.searchParams.get('slot');
+    const slot: 1 | 2 = slotParam === '2' ? 2 : 1;
     const { env } = getRequestContext() as unknown as { env: Env };
     const db = env.DB;
 
@@ -29,14 +31,49 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Not paired' });
     }
 
-    // Get partner
-    const partner = await db
-      .prepare('SELECT * FROM members WHERE pair_id = ? AND device_id != ?')
-      .bind(sender.pair_id, deviceId)
-      .first<Member>();
+    let useLegacySchema = false;
+    let senderPair: MemberPair | null = null;
+
+    try {
+      senderPair = await db
+        .prepare('SELECT * FROM member_pairs WHERE member_id = ? AND slot = ?')
+        .bind(sender.id, slot)
+        .first<MemberPair>();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes('no such table: member_pairs')) {
+        useLegacySchema = true;
+      } else {
+        throw error;
+      }
+    }
+
+    if (!useLegacySchema && !senderPair) {
+      return NextResponse.json({ error: `No pairing in slot ${slot}`, slot });
+    }
+
+    let partner: Member | null = null;
+    if (useLegacySchema) {
+      partner = await db
+        .prepare('SELECT * FROM members WHERE pair_id = ? AND device_id != ?')
+        .bind(sender.pair_id, deviceId)
+        .first<Member>();
+    } else if (senderPair) {
+      const partnerPair = await db
+        .prepare('SELECT * FROM member_pairs WHERE pair_id = ? AND member_id != ?')
+        .bind(senderPair.pair_id, sender.id)
+        .first<MemberPair>();
+
+      if (partnerPair) {
+        partner = await db
+          .prepare('SELECT * FROM members WHERE id = ?')
+          .bind(partnerPair.member_id)
+          .first<Member>();
+      }
+    }
 
     if (!partner) {
-      return NextResponse.json({ error: 'No partner' });
+      return NextResponse.json({ error: 'No partner', slot });
     }
 
     if (!partner.push_endpoint || !partner.push_p256dh || !partner.push_auth) {
@@ -61,7 +98,7 @@ export async function GET(request: NextRequest) {
       env.VAPID_SUBJECT || 'mailto:hello@cooling.app'
     );
 
-    return NextResponse.json(result);
+    return NextResponse.json({ slot, ...result });
   } catch (error) {
     return NextResponse.json({
       error: 'Exception',
