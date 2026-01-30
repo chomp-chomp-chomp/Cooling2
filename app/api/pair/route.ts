@@ -156,12 +156,22 @@ export async function POST(request: NextRequest) {
       }
 
       // Check how many members are in this pair
-      const pairMembers = await db
-        .prepare('SELECT COUNT(*) as count FROM member_pairs WHERE pair_id = ?')
-        .bind(pairId)
-        .first<{ count: number }>();
-
-      const memberCount = pairMembers?.count || 0;
+      // Try member_pairs first, fall back to members table
+      let memberCount = 0;
+      try {
+        const pairMembers = await db
+          .prepare('SELECT COUNT(*) as count FROM member_pairs WHERE pair_id = ?')
+          .bind(pairId)
+          .first<{ count: number }>();
+        memberCount = pairMembers?.count || 0;
+      } catch (error) {
+        // Fall back to checking members table (legacy schema)
+        const pairMembers = await db
+          .prepare('SELECT COUNT(*) as count FROM members WHERE pair_id = ?')
+          .bind(pairId)
+          .first<{ count: number }>();
+        memberCount = pairMembers?.count || 0;
+      }
 
       if (memberCount >= 2) {
         return NextResponse.json<PairResponse>(

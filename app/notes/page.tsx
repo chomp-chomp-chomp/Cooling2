@@ -151,7 +151,8 @@ Is this supposed to fix something?
 No.
 `;
 
-const KNOWN_ISSUES_MD = `Buzzes are ambiguous.
+// Known Issues content split for inserting "Another Cooling is possible." link
+const KNOWN_ISSUES_BEFORE = `Buzzes are ambiguous.
 This will not be fixed.
 
 The other person may not respond.
@@ -171,8 +172,9 @@ Some report anxiety.
 Both are unplanned side effects.
 
 The app only supports two people.
-This is a structural limit.
+This is a structural limit.`;
 
+const KNOWN_ISSUES_AFTER = `
 There is no correct way to use the app.
 This is intentional.
 
@@ -197,7 +199,7 @@ export default function Notes() {
       { key: "versionNotes", title: "Version Notes", content: VERSION_NOTES_MD },
       { key: "tos", title: "ToS", content: TOS_MD },
       { key: "antiFaq", title: "Anti-FAQ", content: ANTI_FAQ_MD },
-      { key: "knownIssues", title: "Known Issues", content: KNOWN_ISSUES_MD },
+      { key: "knownIssues", title: "Known Issues", content: "" }, // Special rendering
     ],
     []
   );
@@ -207,6 +209,9 @@ export default function Notes() {
 
   // Track whether slot 2 exists (to conditionally show "Another Cooling" link)
   const [slot2Exists, setSlot2Exists] = useState<boolean | null>(null);
+
+  // Check if both slots are filled (hide link when both exist)
+  const bothSlotsFilled = slot2Exists === true;
 
   useEffect(() => {
     async function checkSlots() {
@@ -304,8 +309,27 @@ export default function Notes() {
                 >
                   <div style={styles.panelInner}>
                     <div style={styles.panelContent}>
-                      {/* Render as pre-wrapped text (no markdown parser needed) */}
-                      <div style={styles.textBlock}>{s.content}</div>
+                      {/* Special rendering for Known Issues with inline link */}
+                      {s.key === "knownIssues" ? (
+                        <div style={styles.textBlock}>
+                          {KNOWN_ISSUES_BEFORE}
+                          {!bothSlotsFilled && (
+                            <>
+                              {"\n"}
+                              <button
+                                type="button"
+                                onClick={handleAnotherCooling}
+                                style={styles.inlineLink}
+                              >
+                                Another Cooling is possible.
+                              </button>
+                            </>
+                          )}
+                          {KNOWN_ISSUES_AFTER}
+                        </div>
+                      ) : (
+                        <div style={styles.textBlock}>{s.content}</div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -316,19 +340,6 @@ export default function Notes() {
             );
           })}
         </div>
-
-        {/* "Another Cooling is possible." - only shown when slot 2 doesn't exist */}
-        {slot2Exists === false && (
-          <div style={styles.anotherCoolingWrap}>
-            <button
-              type="button"
-              onClick={handleAnotherCooling}
-              style={styles.anotherCoolingLink}
-            >
-              Another Cooling is possible.
-            </button>
-          </div>
-        )}
 
         <div style={styles.fixLink}>
           <Link href="/notifications" style={styles.subtleLink}>
@@ -441,11 +452,7 @@ const styles: Record<string, React.CSSProperties> = {
     color: "inherit",
     opacity: 0.5,
   },
-  anotherCoolingWrap: {
-    marginTop: 24,
-    textAlign: "center",
-  },
-  anotherCoolingLink: {
+  inlineLink: {
     fontSize: 14,
     lineHeight: 1.5,
     color: "inherit",
@@ -454,6 +461,8 @@ const styles: Record<string, React.CSSProperties> = {
     border: "none",
     padding: 0,
     cursor: "pointer",
-    textDecoration: "none",
+    textDecoration: "underline",
+    textDecorationColor: "rgba(0, 0, 0, 0.3)",
+    textUnderlineOffset: "2px",
   },
 };
