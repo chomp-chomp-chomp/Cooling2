@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import React, { useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 
 type SectionKey = "readme" | "versionNotes" | "tos" | "antiFaq" | "knownIssues";
 
@@ -189,6 +190,7 @@ This is out of scope.
  * - Calm animation timing
  */
 export default function Notes() {
+  const router = useRouter();
   const sections: Section[] = useMemo(
     () => [
       { key: "readme", title: "README", content: README_MD, defaultOpen: true },
@@ -202,6 +204,34 @@ export default function Notes() {
 
   // One-open-at-a-time accordion (recommended for clarity on mobile)
   const [openKey, setOpenKey] = useState<SectionKey>("readme");
+
+  // Track whether slot 2 exists (to conditionally show "Another Cooling" link)
+  const [slot2Exists, setSlot2Exists] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    async function checkSlots() {
+      try {
+        const res = await fetch("/api/me");
+        if (res.ok) {
+          const data: { slots?: { 1: boolean; 2: boolean } } = await res.json();
+          if (data.slots) {
+            setSlot2Exists(data.slots[2] === true);
+          } else {
+            setSlot2Exists(false);
+          }
+        }
+      } catch {
+        // Ignore errors
+      }
+    }
+    checkSlots();
+  }, []);
+
+  const handleAnotherCooling = useCallback(() => {
+    // Set pending slot in localStorage and navigate to home for pairing
+    localStorage.setItem("pendingSlot", "2");
+    router.push("/");
+  }, [router]);
 
   function toggle(key: SectionKey) {
     setOpenKey((prev) => (prev === key ? prev : key));
@@ -286,6 +316,19 @@ export default function Notes() {
             );
           })}
         </div>
+
+        {/* "Another Cooling is possible." - only shown when slot 2 doesn't exist */}
+        {slot2Exists === false && (
+          <div style={styles.anotherCoolingWrap}>
+            <button
+              type="button"
+              onClick={handleAnotherCooling}
+              style={styles.anotherCoolingLink}
+            >
+              Another Cooling is possible.
+            </button>
+          </div>
+        )}
 
         <div style={styles.fixLink}>
           <Link href="/notifications" style={styles.subtleLink}>
@@ -397,5 +440,20 @@ const styles: Record<string, React.CSSProperties> = {
     textDecoration: "none",
     color: "inherit",
     opacity: 0.5,
+  },
+  anotherCoolingWrap: {
+    marginTop: 24,
+    textAlign: "center",
+  },
+  anotherCoolingLink: {
+    fontSize: 14,
+    lineHeight: 1.5,
+    color: "inherit",
+    opacity: 0.95,
+    background: "none",
+    border: "none",
+    padding: 0,
+    cursor: "pointer",
+    textDecoration: "none",
   },
 };
