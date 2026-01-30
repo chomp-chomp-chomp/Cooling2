@@ -52,17 +52,15 @@ export default function HomePage() {
   const longPressTimerRef = useRef<NodeJS.Timeout | null>(null);
   const longPressFiredRef = useRef<boolean>(false);
   const pressStartPosRef = useRef<{ x: number; y: number } | null>(null);
-  const [showHintToast, setShowHintToast] = useState(false);
 
-  // Pending slot for second pairing (set from Notes page link or hint toast)
+  // Pending slot for second pairing (set from Notes page link)
   const [pendingSlot, setPendingSlot] = useState<SlotNum | null>(null);
 
   // Track which slot we're waiting for (for partner to join)
   const [waitingForSlot, setWaitingForSlot] = useState<SlotNum | null>(null);
 
-  // Double-tap state for chomp
-  const lastTapTimeRef = useRef<number>(0);
-  const DOUBLE_TAP_THRESHOLD = 400; // ms
+  // Swipe threshold for slot switching
+  const SWIPE_THRESHOLD = 50; // px
 
   const logDebug = useCallback((message: string) => {
     const timestamp = new Date().toLocaleTimeString();
@@ -687,31 +685,11 @@ export default function HomePage() {
     return () => clearInterval(interval);
   }, [appState, waitingForSlot, deviceId, fetchFullStatus, fetchStatus, logDebug]);
 
-  // Long press handling for slot switching or hint
+  // Long press sends chomp
   const handleLongPressAction = useCallback(() => {
-    // If both slots filled, long-press switches slots
-    if (slotsInfo.slots[1] && slotsInfo.slots[2]) {
-      const newSlot: SlotNum = activeSlot === 1 ? 2 : 1;
-      setActiveSlot(newSlot);
-      logDebug(`switched to slot ${newSlot}`);
-      return;
-    }
-
-    // Only slot 1 exists - check if hint has been shown
-    const hintShown = localStorage.getItem("seenSecondCoolingHint") === "true";
-    if (hintShown) {
-      // Hint already shown, do nothing
-      return;
-    }
-
-    // Show the one-time hint
-    setShowHintToast(true);
-    localStorage.setItem("seenSecondCoolingHint", "true");
-    logDebug("showed second cooling hint");
-
-    // Hide toast after 700ms
-    setTimeout(() => setShowHintToast(false), 700);
-  }, [slotsInfo.slots, activeSlot, logDebug]);
+    if (isSending || sentRemaining > 0) return;
+    handleChomp();
+  }, [isSending, sentRemaining]);
 
   const handleCookiePointerDown = useCallback((e: React.PointerEvent) => {
     // Capture pointer for reliable tracking
@@ -733,11 +711,26 @@ export default function HomePage() {
       clearTimeout(longPressTimerRef.current);
       longPressTimerRef.current = null;
     }
+
+    // Check for swipe to switch slots (only if both slots exist)
+    if (pressStartPosRef.current && slotsInfo.slots[1] && slotsInfo.slots[2]) {
+      const dx = e.clientX - pressStartPosRef.current.x;
+      // Horizontal swipe detection
+      if (Math.abs(dx) > SWIPE_THRESHOLD) {
+        // Swipe right → slot 1, swipe left → slot 2
+        const newSlot: SlotNum = dx > 0 ? 1 : 2;
+        if (newSlot !== activeSlot) {
+          setActiveSlot(newSlot);
+          logDebug(`swiped to slot ${newSlot}`);
+        }
+      }
+    }
+
     pressStartPosRef.current = null;
-  }, []);
+  }, [slotsInfo.slots, activeSlot, logDebug]);
 
   const handleCookiePointerMove = useCallback((e: React.PointerEvent) => {
-    // Cancel long press if moved more than 10px
+    // Cancel long press if moved more than 10px (for swipe detection)
     if (pressStartPosRef.current && longPressTimerRef.current) {
       const dx = e.clientX - pressStartPosRef.current.x;
       const dy = e.clientY - pressStartPosRef.current.y;
@@ -754,34 +747,13 @@ export default function HomePage() {
       e.preventDefault();
       e.stopPropagation();
       longPressFiredRef.current = false;
-      return;
     }
-
-    // Double-tap detection for chomp
-    const now = Date.now();
-    const timeSinceLastTap = now - lastTapTimeRef.current;
-
-    if (timeSinceLastTap < DOUBLE_TAP_THRESHOLD) {
-      // Double-tap detected - do chomp
-      lastTapTimeRef.current = 0; // Reset to prevent triple-tap
-      handleChomp();
-    } else {
-      // First tap - just record the time
-      lastTapTimeRef.current = now;
-    }
+    // Regular tap does nothing - long press sends chomp
   }, []);
 
   const handleCookieContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
   }, []);
-
-  // Handle tapping the hint toast to go to pairing for slot 2
-  const handleHintToastTap = useCallback(() => {
-    setShowHintToast(false);
-    setPendingSlot(2);
-    setAppState("pair");
-    logDebug("navigating to pair for slot 2 via hint");
-  }, [logDebug]);
 
   const inOven = sentRemaining > 0;
   const hasBothSlots = slotsInfo.slots[1] && slotsInfo.slots[2];
@@ -1030,17 +1002,6 @@ export default function HomePage() {
           </div>
         )}
 
-        {/* One-time hint toast (tappable to go to pairing) */}
-        {showHintToast && (
-          <button
-            type="button"
-            onClick={handleHintToastTap}
-            style={styles.hintToast}
-          >
-            another cooling
-          </button>
-        )}
-
         <div style={styles.statusWrap}>
           <div style={styles.status}>
             {inOven ? `in the oven • ${sentRemaining} seconds` : "Cooling"}
@@ -1275,18 +1236,5 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: "50%",
     border: "1px solid var(--dot-ring)",
     pointerEvents: "none",
-  },
-  hintToast: {
-    position: "absolute",
-    bottom: 180,
-    left: "50%",
-    transform: "translateX(-50%)",
-    fontSize: 13,
-    padding: "8px 16px",
-    background: "var(--surface)",
-    borderRadius: 6,
-    border: "none",
-    cursor: "pointer",
-    color: "var(--muted-text)",
   },
 };
