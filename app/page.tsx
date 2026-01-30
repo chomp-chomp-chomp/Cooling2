@@ -50,6 +50,10 @@ export default function HomePage() {
   // Long press state
   const longPressTimerRef = useRef<NodeJS.Timeout | null>(null);
   const [showSlotToast, setShowSlotToast] = useState(false);
+  const [showHintToast, setShowHintToast] = useState(false);
+
+  // Pending slot for second pairing (set from Notes page link or hint toast)
+  const [pendingSlot, setPendingSlot] = useState<SlotNum | null>(null);
 
   const logDebug = useCallback((message: string) => {
     const timestamp = new Date().toLocaleTimeString();
@@ -68,6 +72,16 @@ export default function HomePage() {
     const stored = localStorage.getItem("activeSlot");
     if (stored === "2") {
       setActiveSlot(2);
+    }
+  }, []);
+
+  // Check for pendingSlot (set by Notes page "Another Cooling" link or hint toast)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const pending = localStorage.getItem("pendingSlot");
+    if (pending === "2") {
+      setPendingSlot(2);
+      localStorage.removeItem("pendingSlot");
     }
   }, []);
 
@@ -297,6 +311,16 @@ export default function HomePage() {
 
       logDebug(`me ok (paired=${data.paired ?? false}, hasPartner=${data.hasPartner ?? false})`);
 
+      // Check for pending slot 2 pairing request
+      const pending = localStorage.getItem("pendingSlot");
+      if (pending === "2" && !data.slots?.[2]) {
+        localStorage.removeItem("pendingSlot");
+        setPendingSlot(2);
+        setAppState("pair");
+        logDebug("showing pair screen for slot 2");
+        return;
+      }
+
       if (data.paired && data.hasPartner) {
         setAppState("ready");
         await fetchStatus();
@@ -314,7 +338,7 @@ export default function HomePage() {
     if (deviceId) {
       init();
     }
-  }, [deviceId, isStandalone, fetchFullStatus, fetchStatus]);
+  }, [deviceId, isStandalone, fetchFullStatus, fetchStatus, logDebug]);
 
   // Listen for visibility changes to refetch status
   useEffect(() => {
@@ -488,10 +512,16 @@ export default function HomePage() {
   // Handle pairing
   async function handlePair(code: string) {
     try {
+      // Include slot parameter if we have a pending slot
+      const body: { code: string; deviceId: string; slot?: SlotNum } = { code, deviceId };
+      if (pendingSlot) {
+        body.slot = pendingSlot;
+      }
+
       const res = await fetch("/api/pair", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code, deviceId }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) {
         const body = await res.text();
@@ -508,6 +538,9 @@ export default function HomePage() {
       } = await res.json();
 
       if (data.ok || data.success) {
+        // Clear pending slot after successful pairing
+        setPendingSlot(null);
+
         if (data.slots) {
           setSlotsInfo((prev) => ({ ...prev, slots: data.slots! }));
         }
@@ -618,21 +651,38 @@ export default function HomePage() {
     return () => clearInterval(interval);
   }, [appState, deviceId, fetchFullStatus, fetchStatus]);
 
-  // Long press handling for slot switching
+  // Long press handling for slot switching or hint
   const handleCookiePressStart = useCallback(() => {
-    // Only enable if slot 2 exists
-    if (!slotsInfo.slots[2]) return;
+    // If slot 2 exists, long-press switches slots
+    if (slotsInfo.slots[2]) {
+      longPressTimerRef.current = setTimeout(() => {
+        const newSlot: SlotNum = activeSlot === 1 ? 2 : 1;
+        setActiveSlot(newSlot);
+        setShowSlotToast(true);
+        logDebug(`switched to slot ${newSlot}`);
 
+        // Hide toast after 700ms
+        setTimeout(() => setShowSlotToast(false), 700);
+      }, 500);
+      return;
+    }
+
+    // Slot 2 doesn't exist - check if hint has been shown
+    const hintShown = localStorage.getItem("seenSecondCoolingHint") === "true";
+    if (hintShown) {
+      // Hint already shown, do nothing
+      return;
+    }
+
+    // Show the one-time hint
     longPressTimerRef.current = setTimeout(() => {
-      // Toggle active slot
-      const newSlot: SlotNum = activeSlot === 1 ? 2 : 1;
-      setActiveSlot(newSlot);
-      setShowSlotToast(true);
-      logDebug(`switched to slot ${newSlot}`);
+      setShowHintToast(true);
+      localStorage.setItem("seenSecondCoolingHint", "true");
+      logDebug("showed second cooling hint");
 
       // Hide toast after 700ms
-      setTimeout(() => setShowSlotToast(false), 700);
-    }, 500); // Long press threshold: 500ms
+      setTimeout(() => setShowHintToast(false), 700);
+    }, 500);
   }, [slotsInfo.slots, activeSlot, logDebug]);
 
   const handleCookiePressEnd = useCallback(() => {
@@ -641,6 +691,14 @@ export default function HomePage() {
       longPressTimerRef.current = null;
     }
   }, []);
+
+  // Handle tapping the hint toast to go to pairing for slot 2
+  const handleHintToastTap = useCallback(() => {
+    setShowHintToast(false);
+    setPendingSlot(2);
+    setAppState("pair");
+    logDebug("navigating to pair for slot 2 via hint");
+  }, [logDebug]);
 
   const inOven = sentRemaining > 0;
   const hasSlot2 = slotsInfo.slots[2];
@@ -867,6 +925,17 @@ export default function HomePage() {
         {/* Slot switch toast */}
         {showSlotToast && (
           <div style={styles.slotToast}>another cooling</div>
+        )}
+
+        {/* One-time hint toast (tappable to go to pairing) */}
+        {showHintToast && (
+          <button
+            type="button"
+            onClick={handleHintToastTap}
+            style={styles.hintToast}
+          >
+            another cooling
+          </button>
         )}
 
         <div style={styles.statusWrap}>
@@ -1105,5 +1174,19 @@ const styles: Record<string, React.CSSProperties> = {
     background: "rgba(0, 0, 0, 0.05)",
     borderRadius: 6,
     pointerEvents: "none",
+  },
+  hintToast: {
+    position: "absolute",
+    bottom: 180,
+    left: "50%",
+    transform: "translateX(-50%)",
+    fontSize: 13,
+    opacity: 0.7,
+    padding: "8px 16px",
+    background: "rgba(0, 0, 0, 0.05)",
+    borderRadius: 6,
+    border: "none",
+    cursor: "pointer",
+    color: "inherit",
   },
 };
