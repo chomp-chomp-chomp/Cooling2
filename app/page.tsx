@@ -75,16 +75,6 @@ export default function HomePage() {
     }
   }, []);
 
-  // Check for pendingSlot (set by Notes page "Another Cooling" link or hint toast)
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const pending = localStorage.getItem("pendingSlot");
-    if (pending === "2") {
-      setPendingSlot(2);
-      localStorage.removeItem("pendingSlot");
-    }
-  }, []);
-
   // Save activeSlot to localStorage
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -889,11 +879,22 @@ export default function HomePage() {
           ) : null}
         </button>
 
-        {/* Orientation dots - only shown when slot 2 exists */}
+        {/* Orientation dots - only shown when slot 2 exists, tappable to switch */}
         {hasSlot2 && (
           <div style={styles.dotsContainer}>
-            {/* Slot 1 dot */}
-            <div style={styles.dotWrapper}>
+            {/* Slot 1 dot - tap to switch */}
+            <button
+              type="button"
+              onClick={() => {
+                if (activeSlot !== 1) {
+                  setActiveSlot(1);
+                  setShowSlotToast(true);
+                  setTimeout(() => setShowSlotToast(false), 1200);
+                }
+              }}
+              style={styles.dotButton}
+              aria-label="Switch to slot 1"
+            >
               <div
                 style={{
                   ...styles.dot,
@@ -904,10 +905,21 @@ export default function HomePage() {
               {activeSlot === 2 && inactiveReceivedRemaining > 0 && (
                 <div style={styles.dotRing} />
               )}
-            </div>
+            </button>
 
-            {/* Slot 2 dot */}
-            <div style={styles.dotWrapper}>
+            {/* Slot 2 dot - tap to switch */}
+            <button
+              type="button"
+              onClick={() => {
+                if (activeSlot !== 2) {
+                  setActiveSlot(2);
+                  setShowSlotToast(true);
+                  setTimeout(() => setShowSlotToast(false), 1200);
+                }
+              }}
+              style={styles.dotButton}
+              aria-label="Switch to slot 2"
+            >
               <div
                 style={{
                   ...styles.dot,
@@ -918,7 +930,7 @@ export default function HomePage() {
               {activeSlot === 1 && inactiveReceivedRemaining > 0 && (
                 <div style={styles.dotRing} />
               )}
-            </div>
+            </button>
           </div>
         )}
 
@@ -988,10 +1000,13 @@ const styles: Record<string, React.CSSProperties> = {
       "transform 120ms cubic-bezier(0.2, 0.0, 0.0, 1.0), opacity 120ms linear",
     position: "relative",
     WebkitTapHighlightColor: "transparent",
+    touchAction: "manipulation",
   },
   heartImage: {
     display: "block",
     userSelect: "none",
+    WebkitTouchCallout: "none",
+    pointerEvents: "none",
   },
   receivedBadge: {
     position: "absolute",
@@ -1130,13 +1145,18 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 10,
     marginTop: 8,
   },
-  dotWrapper: {
+  dotButton: {
     position: "relative",
-    width: 10,
-    height: 10,
+    width: 24,
+    height: 24,
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
+    background: "transparent",
+    border: "none",
+    padding: 0,
+    cursor: "pointer",
+    WebkitTapHighlightColor: "transparent",
   },
   dot: {
     width: 5,
