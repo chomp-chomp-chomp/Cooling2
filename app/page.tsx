@@ -20,6 +20,9 @@ interface SlotsInfo {
 const OVEN_SECONDS = 108;
 const DOUBLE_TAP_MS = 320;
 const TAP_MOVE_TOLERANCE = 10;
+const DEAD_ZONE_PX = 14;
+const SWIPE_THRESHOLD_PX = 48;
+const RACK_NUDGE_DURATION_MS = 220;
 
 export default function HomePage() {
   const [appState, setAppState] = useState<AppState>("loading");
@@ -46,22 +49,26 @@ export default function HomePage() {
   const [deviceId, setDeviceId] = useState<string>("");
   const [debugLogs, setDebugLogs] = useState<string[]>([]);
   const [devMode, setDevMode] = useState(false);
+  const [rackPanelPhase, setRackPanelPhase] = useState<"isActive" | "isExiting" | "isEntering">("isActive");
+  const [supportsPointerEvents, setSupportsPointerEvents] = useState(false);
   const buzzAudioRef = useRef<HTMLAudioElement | null>(null);
   const prevReceivedRef = useRef<number>(0);
 
-  const pressStartPosRef = useRef<{ x: number; y: number } | null>(null);
   const tapStartPosRef = useRef<{ x: number; y: number } | null>(null);
   const tapMovedRef = useRef<boolean>(false);
   const lastTapAtRef = useRef<number | null>(null);
+  const swipeStartPosRef = useRef<{ x: number; y: number } | null>(null);
+  const swipeTrackingRef = useRef<boolean>(false);
+  const swipeTriggeredRef = useRef<boolean>(false);
+  const isAnimatingRef = useRef<boolean>(false);
+  const activeSlotRef = useRef<SlotNum>(activeSlot);
+  const prefersReducedMotionRef = useRef<boolean>(false);
 
   // Pending slot for second pairing (set from Notes page link)
   const [pendingSlot, setPendingSlot] = useState<SlotNum | null>(null);
 
   // Track which slot we're waiting for (for partner to join)
   const [waitingForSlot, setWaitingForSlot] = useState<SlotNum | null>(null);
-
-  // Swipe threshold for slot switching
-  const SWIPE_THRESHOLD = 40; // px
 
   const logDebug = useCallback((message: string) => {
     const timestamp = new Date().toLocaleTimeString();
@@ -72,6 +79,44 @@ export default function HomePage() {
     if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
     setDevMode(params.get("dev") === "1");
+  }, []);
+
+  useEffect(() => {
+    activeSlotRef.current = activeSlot;
+  }, [activeSlot]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setSupportsPointerEvents("PointerEvent" in window);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mediaQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const updatePreference = () => {
+      prefersReducedMotionRef.current = mediaQuery.matches;
+    };
+    updatePreference();
+    if (mediaQuery.addEventListener) {
+      mediaQuery.addEventListener("change", updatePreference);
+    } else {
+      mediaQuery.addListener(updatePreference);
+    }
+    return () => {
+      if (mediaQuery.removeEventListener) {
+        mediaQuery.removeEventListener("change", updatePreference);
+      } else {
+        mediaQuery.removeListener(updatePreference);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    document.body.classList.add("home-screen");
+    return () => {
+      document.body.classList.remove("home-screen");
+    };
   }, []);
 
   // Load activeSlot from localStorage
@@ -686,34 +731,115 @@ export default function HomePage() {
     return () => clearInterval(interval);
   }, [appState, waitingForSlot, deviceId, fetchFullStatus, fetchStatus, logDebug]);
 
-  const handleSwipePointerDown = useCallback((e: React.PointerEvent) => {
-    pressStartPosRef.current = { x: e.clientX, y: e.clientY };
+  const updateTapMoved = useCallback((x: number, y: number) => {
+    if (!tapStartPosRef.current) return;
+    const dx = x - tapStartPosRef.current.x;
+    const dy = y - tapStartPosRef.current.y;
+    if (Math.hypot(dx, dy) > Math.max(TAP_MOVE_TOLERANCE, DEAD_ZONE_PX)) {
+      tapMovedRef.current = true;
+    }
   }, []);
 
-  const handleSwipePointerUp = useCallback((e: React.PointerEvent) => {
-    if (pressStartPosRef.current && slotsInfo.slots[1] && slotsInfo.slots[2]) {
-      const dx = e.clientX - pressStartPosRef.current.x;
-      if (Math.abs(dx) > SWIPE_THRESHOLD) {
-        const newSlot: SlotNum = dx > 0 ? 1 : 2;
-        if (newSlot !== activeSlot) {
-          setActiveSlot(newSlot);
-          logDebug(`swiped to slot ${newSlot}`);
-        }
-      }
+  const switchSlot = useCallback((targetSlot: SlotNum) => {
+    if (targetSlot === activeSlotRef.current) return;
+    if (isAnimatingRef.current) return;
+
+    if (prefersReducedMotionRef.current || typeof window === "undefined") {
+      setRackPanelPhase("isActive");
+      setActiveSlot(targetSlot);
+      logDebug(`switched to slot ${targetSlot}`);
+      return;
     }
 
-    pressStartPosRef.current = null;
-  }, [slotsInfo.slots, activeSlot, logDebug]);
+    isAnimatingRef.current = true;
+    setRackPanelPhase("isExiting");
+
+    window.requestAnimationFrame(() => {
+      setActiveSlot(targetSlot);
+      setRackPanelPhase("isEntering");
+
+      window.requestAnimationFrame(() => {
+        setRackPanelPhase("isActive");
+        window.setTimeout(() => {
+          isAnimatingRef.current = false;
+        }, RACK_NUDGE_DURATION_MS);
+      });
+    });
+    logDebug(`switched to slot ${targetSlot}`);
+  }, [logDebug]);
+
+  const startSwipeTracking = useCallback((x: number, y: number) => {
+    if (!slotsInfo.slots[1] || !slotsInfo.slots[2]) return;
+    swipeStartPosRef.current = { x, y };
+    swipeTrackingRef.current = true;
+    swipeTriggeredRef.current = false;
+  }, [slotsInfo.slots]);
+
+  const moveSwipeTracking = useCallback((x: number, y: number) => {
+    if (!swipeTrackingRef.current || swipeTriggeredRef.current || !swipeStartPosRef.current) return;
+    const dx = x - swipeStartPosRef.current.x;
+    const dy = y - swipeStartPosRef.current.y;
+    const absX = Math.abs(dx);
+    const absY = Math.abs(dy);
+
+    if (absX < DEAD_ZONE_PX && absY < DEAD_ZONE_PX) {
+      return;
+    }
+
+    if (absY > absX) {
+      swipeTrackingRef.current = false;
+      return;
+    }
+
+    if (dx > 0) {
+      return;
+    }
+
+    if (dx <= -SWIPE_THRESHOLD_PX) {
+      swipeTriggeredRef.current = true;
+      const currentSlot = activeSlotRef.current;
+      const targetSlot: SlotNum = currentSlot === 1 ? 2 : 1;
+      switchSlot(targetSlot);
+    }
+  }, [switchSlot]);
+
+  const endSwipeTracking = useCallback(() => {
+    swipeTrackingRef.current = false;
+    swipeTriggeredRef.current = false;
+    swipeStartPosRef.current = null;
+  }, []);
+
+  const handleSwipePointerDown = useCallback((e: React.PointerEvent) => {
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    startSwipeTracking(e.clientX, e.clientY);
+  }, [startSwipeTracking]);
 
   const handleSwipePointerMove = useCallback((e: React.PointerEvent) => {
-    if (pressStartPosRef.current) {
-      const dx = e.clientX - pressStartPosRef.current.x;
-      const dy = e.clientY - pressStartPosRef.current.y;
-      if (Math.sqrt(dx * dx + dy * dy) > TAP_MOVE_TOLERANCE) {
-        tapMovedRef.current = true;
-      }
-    }
-  }, []);
+    if (e.pointerType === "mouse" && e.buttons === 0) return;
+    updateTapMoved(e.clientX, e.clientY);
+    moveSwipeTracking(e.clientX, e.clientY);
+  }, [moveSwipeTracking, updateTapMoved]);
+
+  const handleSwipePointerUp = useCallback(() => {
+    endSwipeTracking();
+  }, [endSwipeTracking]);
+
+  const handleSwipeTouchStart = useCallback((e: React.TouchEvent) => {
+    const touch = e.touches[0];
+    if (!touch) return;
+    startSwipeTracking(touch.clientX, touch.clientY);
+  }, [startSwipeTracking]);
+
+  const handleSwipeTouchMove = useCallback((e: React.TouchEvent) => {
+    const touch = e.touches[0];
+    if (!touch) return;
+    updateTapMoved(touch.clientX, touch.clientY);
+    moveSwipeTracking(touch.clientX, touch.clientY);
+  }, [moveSwipeTracking, updateTapMoved]);
+
+  const handleSwipeTouchEnd = useCallback(() => {
+    endSwipeTracking();
+  }, [endSwipeTracking]);
 
   const handleCookiePointerDown = useCallback((e: React.PointerEvent) => {
     (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
@@ -723,13 +849,36 @@ export default function HomePage() {
 
   const handleCookiePointerUp = useCallback((e: React.PointerEvent) => {
     (e.target as HTMLElement).releasePointerCapture?.(e.pointerId);
+    updateTapMoved(e.clientX, e.clientY);
 
-    if (tapStartPosRef.current) {
-      const dx = e.clientX - tapStartPosRef.current.x;
-      const dy = e.clientY - tapStartPosRef.current.y;
-      if (Math.sqrt(dx * dx + dy * dy) > TAP_MOVE_TOLERANCE) {
-        tapMovedRef.current = true;
+    if (!tapMovedRef.current) {
+      const now = Date.now();
+      if (lastTapAtRef.current && now - lastTapAtRef.current < DOUBLE_TAP_MS) {
+        lastTapAtRef.current = null;
+        if (!isSending && sentRemaining <= 0) {
+          handleChomp();
+        }
+      } else {
+        lastTapAtRef.current = now;
       }
+    } else {
+      lastTapAtRef.current = null;
+    }
+
+    tapStartPosRef.current = null;
+  }, [handleChomp, isSending, sentRemaining, updateTapMoved]);
+
+  const handleCookieTouchStart = useCallback((e: React.TouchEvent) => {
+    const touch = e.touches[0];
+    if (!touch) return;
+    tapStartPosRef.current = { x: touch.clientX, y: touch.clientY };
+    tapMovedRef.current = false;
+  }, []);
+
+  const handleCookieTouchEnd = useCallback((e: React.TouchEvent) => {
+    const touch = e.changedTouches[0];
+    if (touch) {
+      updateTapMoved(touch.clientX, touch.clientY);
     }
 
     if (!tapMovedRef.current) {
@@ -747,7 +896,7 @@ export default function HomePage() {
     }
 
     tapStartPosRef.current = null;
-  }, [handleChomp, isSending, sentRemaining]);
+  }, [handleChomp, isSending, sentRemaining, updateTapMoved]);
 
   const handleCookieClick = useCallback(() => {
     // Single taps do nothing; double tap handled in pointer up.
@@ -922,98 +1071,115 @@ export default function HomePage() {
   // Ready state - main chomp interface
   return (
     <main style={styles.page}>
-      <div
-        style={styles.centerWrap}
-        onPointerDown={handleSwipePointerDown}
-        onPointerUp={handleSwipePointerUp}
-        onPointerCancel={handleSwipePointerUp}
-        onPointerMove={handleSwipePointerMove}
-      >
-        <button
-          type="button"
-          onClick={handleCookieClick}
-          onPointerDown={handleCookiePointerDown}
-          onPointerUp={handleCookiePointerUp}
-          onPointerCancel={handleCookiePointerUp}
-          onContextMenu={handleCookieContextMenu}
-          disabled={inOven || isSending}
-          aria-disabled={inOven || isSending}
-          aria-label="Chomp"
-          style={{
-            ...styles.cookieButton,
-            backgroundImage: `url(${inOven ? "/heart-cookie.png" : "/round-cookie.png"})`,
-            transform: isSending ? "scale(0.98)" : "scale(1)",
-            opacity: inOven ? 0.7 : 1,
-          }}
+      <div style={styles.centerWrap}>
+        <div
+          className="cookieSurface"
+          {...(supportsPointerEvents
+            ? {
+                onPointerDown: handleSwipePointerDown,
+                onPointerUp: handleSwipePointerUp,
+                onPointerCancel: handleSwipePointerUp,
+                onPointerMove: handleSwipePointerMove,
+              }
+            : {
+                onTouchStart: handleSwipeTouchStart,
+                onTouchEnd: handleSwipeTouchEnd,
+                onTouchCancel: handleSwipeTouchEnd,
+                onTouchMove: handleSwipeTouchMove,
+              })}
         >
-          {/* Received badge - small heart in corner */}
-          {receivedRemaining > 0 && (
-            <div
-              style={{
-                ...styles.receivedBadge,
-                backgroundImage: "url(/heart-cookie.png)",
-              }}
-              aria-label="Received chomp"
-            />
-          )}
-        </button>
-
-        {/* Orientation dots - only shown when BOTH slots are filled, tappable to switch */}
-        {hasBothSlots && (
-          <div style={styles.dotsContainer}>
-            {/* Slot 1 dot - tap to switch */}
-            <button
-              type="button"
-              onClick={() => {
-                if (activeSlot !== 1) {
-                  setActiveSlot(1);
+          <button
+            type="button"
+            onClick={handleCookieClick}
+            {...(supportsPointerEvents
+              ? {
+                  onPointerDown: handleCookiePointerDown,
+                  onPointerUp: handleCookiePointerUp,
+                  onPointerCancel: handleCookiePointerUp,
                 }
-              }}
-              style={styles.dotButton}
-              aria-label="Switch to slot 1"
-            >
+              : {
+                  onTouchStart: handleCookieTouchStart,
+                  onTouchEnd: handleCookieTouchEnd,
+                  onTouchCancel: handleCookieTouchEnd,
+                })}
+            onContextMenu={handleCookieContextMenu}
+            disabled={inOven || isSending}
+            aria-disabled={inOven || isSending}
+            aria-label="Chomp"
+            style={{
+              ...styles.cookieButton,
+              backgroundImage: `url(${inOven ? "/heart-cookie.png" : "/round-cookie.png"})`,
+              transform: isSending ? "scale(0.98)" : "scale(1)",
+              opacity: inOven ? 0.7 : 1,
+            }}
+          >
+            {/* Received badge - small heart in corner */}
+            {receivedRemaining > 0 && (
               <div
                 style={{
-                  ...styles.dot,
-                  ...(activeSlot === 1 ? styles.dotActive : styles.dotInactive),
+                  ...styles.receivedBadge,
+                  backgroundImage: "url(/heart-cookie.png)",
                 }}
+                aria-label="Received chomp"
               />
-              {/* Ring around dot if slot 1 has received */}
-              {slot1ReceivedRemaining > 0 && (
-                <div style={styles.dotRing} />
-              )}
-            </button>
+            )}
+          </button>
 
-            {/* Slot 2 dot - tap to switch */}
-            <button
-              type="button"
-              onClick={() => {
-                if (activeSlot !== 2) {
-                  setActiveSlot(2);
-                }
-              }}
-              style={styles.dotButton}
-              aria-label="Switch to slot 2"
-            >
-              <div
-                style={{
-                  ...styles.dot,
-                  ...(activeSlot === 2 ? styles.dotActive : styles.dotInactive),
-                }}
-              />
-              {/* Ring around dot if slot 2 has received */}
-              {slot2ReceivedRemaining > 0 && (
-                <div style={styles.dotRing} />
-              )}
-            </button>
-          </div>
-        )}
+          <div className={`rackPanel ${rackPanelPhase}`}>
+            {/* Orientation dots - only shown when BOTH slots are filled, tappable to switch */}
+            {hasBothSlots && (
+              <div style={styles.dotsContainer}>
+                {/* Slot 1 dot - tap to switch */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    switchSlot(1);
+                  }}
+                  style={styles.dotButton}
+                  aria-label="Switch to slot 1"
+                >
+                  <div
+                    style={{
+                      ...styles.dot,
+                      ...(activeSlot === 1 ? styles.dotActive : styles.dotInactive),
+                    }}
+                  />
+                  {/* Ring around dot if slot 1 has received */}
+                  {slot1ReceivedRemaining > 0 && (
+                    <div style={styles.dotRing} />
+                  )}
+                </button>
 
-        <div style={styles.statusWrap}>
-          <div style={styles.status}>
-            {inOven ? `in the oven • ${sentRemaining} seconds` : "Cooling"}
+                {/* Slot 2 dot - tap to switch */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    switchSlot(2);
+                  }}
+                  style={styles.dotButton}
+                  aria-label="Switch to slot 2"
+                >
+                  <div
+                    style={{
+                      ...styles.dot,
+                      ...(activeSlot === 2 ? styles.dotActive : styles.dotInactive),
+                    }}
+                  />
+                  {/* Ring around dot if slot 2 has received */}
+                  {slot2ReceivedRemaining > 0 && (
+                    <div style={styles.dotRing} />
+                  )}
+                </button>
+              </div>
+            )}
+
+            <div style={styles.statusWrap}>
+              <div style={styles.status}>
+                {inOven ? `in the oven • ${sentRemaining} seconds` : "Cooling"}
+              </div>
+              <div style={styles.lastChomp}>last chomp received: {lastChompRelative}</div>
+            </div>
           </div>
-          <div style={styles.lastChomp}>last chomp received: {lastChompRelative}</div>
         </div>
       </div>
 
