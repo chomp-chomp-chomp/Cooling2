@@ -59,6 +59,7 @@ body.home-screen {
 }
 
 .cookieSurface {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -67,6 +68,38 @@ body.home-screen {
   overscroll-behavior: contain;
   user-select: none;
   -webkit-user-select: none;
+}
+
+.cookieStage {
+  position: relative;
+  width: 240px;
+  height: 240px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.receivedOverlay,
+.receivedOverlay * {
+  pointer-events: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-user-drag: none;
+  -webkit-touch-callout: none;
+}
+
+.receivedIndicator,
+.receivedIndicator * {
+  pointer-events: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-user-drag: none;
+  -webkit-touch-callout: none;
+}
+
+.receivedOverlay {
+  position: absolute;
+  inset: 0;
 }
 
 .rackPanel {

@@ -61,6 +61,7 @@ export default function HomePage() {
   const swipeTrackingRef = useRef<boolean>(false);
   const swipeTriggeredRef = useRef<boolean>(false);
   const isAnimatingRef = useRef<boolean>(false);
+  const isUserSwitchingRef = useRef<boolean>(false);
   const activeSlotRef = useRef<SlotNum>(activeSlot);
   const prefersReducedMotionRef = useRef<boolean>(false);
 
@@ -740,13 +741,16 @@ export default function HomePage() {
     }
   }, []);
 
-  const switchSlot = useCallback((targetSlot: SlotNum) => {
+  const switchSlot = useCallback((targetSlot: SlotNum, isUserInitiated = false) => {
     if (targetSlot === activeSlotRef.current) return;
     if (isAnimatingRef.current) return;
 
-    if (prefersReducedMotionRef.current || typeof window === "undefined") {
+    isUserSwitchingRef.current = isUserInitiated;
+
+    if (!isUserSwitchingRef.current || prefersReducedMotionRef.current || typeof window === "undefined") {
       setRackPanelPhase("isActive");
       setActiveSlot(targetSlot);
+      isUserSwitchingRef.current = false;
       logDebug(`switched to slot ${targetSlot}`);
       return;
     }
@@ -762,6 +766,7 @@ export default function HomePage() {
         setRackPanelPhase("isActive");
         window.setTimeout(() => {
           isAnimatingRef.current = false;
+          isUserSwitchingRef.current = false;
         }, RACK_NUDGE_DURATION_MS);
       });
     });
@@ -799,7 +804,7 @@ export default function HomePage() {
       swipeTriggeredRef.current = true;
       const currentSlot = activeSlotRef.current;
       const targetSlot: SlotNum = currentSlot === 1 ? 2 : 1;
-      switchSlot(targetSlot);
+      switchSlot(targetSlot, true);
     }
   }, [switchSlot]);
 
@@ -1088,42 +1093,42 @@ export default function HomePage() {
                 onTouchMove: handleSwipeTouchMove,
               })}
         >
-          <button
-            type="button"
-            onClick={handleCookieClick}
-            {...(supportsPointerEvents
-              ? {
-                  onPointerDown: handleCookiePointerDown,
-                  onPointerUp: handleCookiePointerUp,
-                  onPointerCancel: handleCookiePointerUp,
-                }
-              : {
-                  onTouchStart: handleCookieTouchStart,
-                  onTouchEnd: handleCookieTouchEnd,
-                  onTouchCancel: handleCookieTouchEnd,
-                })}
-            onContextMenu={handleCookieContextMenu}
-            disabled={inOven || isSending}
-            aria-disabled={inOven || isSending}
-            aria-label="Chomp"
-            style={{
-              ...styles.cookieButton,
-              backgroundImage: `url(${inOven ? "/heart-cookie.png" : "/round-cookie.png"})`,
-              transform: isSending ? "scale(0.98)" : "scale(1)",
-              opacity: inOven ? 0.7 : 1,
-            }}
-          >
-            {/* Received badge - small heart in corner */}
-            {receivedRemaining > 0 && (
+          <div className="cookieStage">
+            <button
+              type="button"
+              onClick={handleCookieClick}
+              {...(supportsPointerEvents
+                ? {
+                    onPointerDown: handleCookiePointerDown,
+                    onPointerUp: handleCookiePointerUp,
+                    onPointerCancel: handleCookiePointerUp,
+                  }
+                : {
+                    onTouchStart: handleCookieTouchStart,
+                    onTouchEnd: handleCookieTouchEnd,
+                    onTouchCancel: handleCookieTouchEnd,
+                  })}
+              onContextMenu={handleCookieContextMenu}
+              disabled={inOven || isSending}
+              aria-disabled={inOven || isSending}
+              aria-label="Chomp"
+              style={{
+                ...styles.cookieButton,
+                backgroundImage: `url(${inOven ? "/heart-cookie.png" : "/round-cookie.png"})`,
+                transform: isSending ? "scale(0.98)" : "scale(1)",
+                opacity: inOven ? 0.7 : 1,
+              }}
+            />
+            <div className="receivedOverlay" aria-hidden="true">
               <div
                 style={{
                   ...styles.receivedBadge,
                   backgroundImage: "url(/heart-cookie.png)",
+                  opacity: receivedRemaining > 0 ? 1 : 0,
                 }}
-                aria-label="Received chomp"
               />
-            )}
-          </button>
+            </div>
+          </div>
 
           <div className={`rackPanel ${rackPanelPhase}`}>
             {/* Orientation dots - only shown when BOTH slots are filled, tappable to switch */}
@@ -1133,7 +1138,7 @@ export default function HomePage() {
                 <button
                   type="button"
                   onClick={() => {
-                    switchSlot(1);
+                    switchSlot(1, true);
                   }}
                   style={styles.dotButton}
                   aria-label="Switch to slot 1"
@@ -1145,16 +1150,20 @@ export default function HomePage() {
                     }}
                   />
                   {/* Ring around dot if slot 1 has received */}
-                  {slot1ReceivedRemaining > 0 && (
-                    <div style={styles.dotRing} />
-                  )}
+                  <div
+                    className="receivedIndicator"
+                    style={{
+                      ...styles.dotRing,
+                      opacity: slot1ReceivedRemaining > 0 ? 1 : 0,
+                    }}
+                  />
                 </button>
 
                 {/* Slot 2 dot - tap to switch */}
                 <button
                   type="button"
                   onClick={() => {
-                    switchSlot(2);
+                    switchSlot(2, true);
                   }}
                   style={styles.dotButton}
                   aria-label="Switch to slot 2"
@@ -1166,9 +1175,13 @@ export default function HomePage() {
                     }}
                   />
                   {/* Ring around dot if slot 2 has received */}
-                  {slot2ReceivedRemaining > 0 && (
-                    <div style={styles.dotRing} />
-                  )}
+                  <div
+                    className="receivedIndicator"
+                    style={{
+                      ...styles.dotRing,
+                      opacity: slot2ReceivedRemaining > 0 ? 1 : 0,
+                    }}
+                  />
                 </button>
               </div>
             )}
