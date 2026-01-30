@@ -8,7 +8,7 @@
   --surface: rgba(0, 0, 0, 0.03);
   --surface-hover: rgba(0, 0, 0, 0.06);
 
-  --dot-active: rgba(0, 0, 0, 0.75);
+  --dot-active: #fc0032;
   --dot-inactive: rgba(0, 0, 0, 0.35);
   --dot-ring: rgba(0, 0, 0, 0.40);
 
@@ -27,7 +27,7 @@
     --surface: rgba(255, 255, 255, 0.06);
     --surface-hover: rgba(255, 255, 255, 0.10);
 
-    --dot-active: rgba(255, 255, 255, 0.75);
+    --dot-active: #fc0032;
     --dot-inactive: rgba(255, 255, 255, 0.35);
     --dot-ring: rgba(255, 255, 255, 0.40);
 
