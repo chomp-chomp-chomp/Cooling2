@@ -1,3 +1,41 @@
+/* CSS Variables - Light mode (default) */
+:root {
+  --bg: #ffffff;
+  --text: rgba(0, 0, 0, 0.93);
+  --muted-text: rgba(0, 0, 0, 0.62);
+  --faint-text: rgba(0, 0, 0, 0.45);
+  --rule: rgba(0, 0, 0, 0.12);
+  --surface: rgba(0, 0, 0, 0.03);
+  --surface-hover: rgba(0, 0, 0, 0.06);
+
+  --dot-active: rgba(0, 0, 0, 0.75);
+  --dot-inactive: rgba(0, 0, 0, 0.35);
+  --dot-ring: rgba(0, 0, 0, 0.40);
+
+  --input-border: rgba(0, 0, 0, 0.15);
+  --button-border: rgba(0, 0, 0, 0.2);
+}
+
+/* Automatic dark mode */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0e0e0e;
+    --text: rgba(255, 255, 255, 0.92);
+    --muted-text: rgba(255, 255, 255, 0.68);
+    --faint-text: rgba(255, 255, 255, 0.45);
+    --rule: rgba(255, 255, 255, 0.16);
+    --surface: rgba(255, 255, 255, 0.06);
+    --surface-hover: rgba(255, 255, 255, 0.10);
+
+    --dot-active: rgba(255, 255, 255, 0.75);
+    --dot-inactive: rgba(255, 255, 255, 0.35);
+    --dot-ring: rgba(255, 255, 255, 0.40);
+
+    --input-border: rgba(255, 255, 255, 0.2);
+    --button-border: rgba(255, 255, 255, 0.25);
+  }
+}
+
 * {
   box-sizing: border-box;
   padding: 0;
@@ -10,8 +48,8 @@ body {
   overflow-x: hidden;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
     Arial, sans-serif;
-  background: #ffffff;
-  color: #111111;
+  background: var(--bg);
+  color: var(--text);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -22,6 +60,12 @@ a {
 
 button {
   font-family: inherit;
+  color: inherit;
+}
+
+input {
+  color: inherit;
+  background: var(--bg);
 }
 
 /* Prevent iOS tap highlight */
