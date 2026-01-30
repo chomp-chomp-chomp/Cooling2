@@ -118,6 +118,7 @@ export async function GET(request: NextRequest) {
 
     // New schema: build slots and stateBySlot from member_pairs
     const slots = { 1: false, 2: false };
+    const hasPartnerBySlot: { 1?: boolean; 2?: boolean } = {};
     const stateBySlot: { 1?: SlotState; 2?: SlotState } = {};
     let hasAnyPartner = false;
     let firstSlotOvenRemaining = 0;
@@ -132,7 +133,10 @@ export async function GET(request: NextRequest) {
         .bind(mp.pair_id, member.id)
         .first<{ count: number }>();
 
-      if (partnerCount && partnerCount.count > 0) {
+      const slotHasPartner = !!(partnerCount && partnerCount.count > 0);
+      hasPartnerBySlot[slotNum] = slotHasPartner;
+
+      if (slotHasPartner) {
         hasAnyPartner = true;
       }
 
@@ -154,6 +158,7 @@ export async function GET(request: NextRequest) {
       paired: slots[1] || slots[2],
       ovenRemainingSeconds: firstSlotOvenRemaining,
       hasPartner: hasAnyPartner,
+      hasPartnerBySlot,
       serverNow: now,
       slots,
       stateBySlot,

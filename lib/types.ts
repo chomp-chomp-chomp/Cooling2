@@ -93,6 +93,7 @@ export interface MeResponse {
   // New slot-aware fields
   serverNow?: number;
   slots?: { 1: boolean; 2: boolean };
+  hasPartnerBySlot?: { 1?: boolean; 2?: boolean };
   stateBySlot?: {
     1?: SlotState;
     2?: SlotState;

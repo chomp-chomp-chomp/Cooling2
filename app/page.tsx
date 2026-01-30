@@ -57,6 +57,13 @@ export default function HomePage() {
   // Pending slot for second pairing (set from Notes page link or hint toast)
   const [pendingSlot, setPendingSlot] = useState<SlotNum | null>(null);
 
+  // Track which slot we're waiting for (for partner to join)
+  const [waitingForSlot, setWaitingForSlot] = useState<SlotNum | null>(null);
+
+  // Double-tap state for chomp
+  const lastTapTimeRef = useRef<number>(0);
+  const DOUBLE_TAP_THRESHOLD = 400; // ms
+
   const logDebug = useCallback((message: string) => {
     const timestamp = new Date().toLocaleTimeString();
     setDebugLogs((prev) => [`[${timestamp}] ${message}`, ...prev].slice(0, 80));
@@ -313,7 +320,30 @@ export default function HomePage() {
         return;
       }
 
-      if (data.paired && data.hasPartner) {
+      // Check if we were waiting for a specific slot's partner
+      const storedWaitingSlot = localStorage.getItem("waitingForSlot");
+      const hasPartnerBySlot = (data as { hasPartnerBySlot?: { 1?: boolean; 2?: boolean } }).hasPartnerBySlot;
+
+      if (storedWaitingSlot) {
+        const slotNum = Number(storedWaitingSlot) as SlotNum;
+        const slotHasPartner = hasPartnerBySlot?.[slotNum] ?? false;
+
+        if (!slotHasPartner && data.slots?.[slotNum]) {
+          // Still waiting for partner on this slot
+          setWaitingForSlot(slotNum);
+          setAppState("waiting");
+          const stored = localStorage.getItem("pairCode");
+          if (stored) setPairCode(stored);
+          await subscribeToPush();
+        } else {
+          // Partner joined or slot doesn't exist anymore
+          localStorage.removeItem("waitingForSlot");
+          setWaitingForSlot(null);
+          setAppState("ready");
+          await fetchStatus();
+          await subscribeToPush();
+        }
+      } else if (data.paired && data.hasPartner) {
         setAppState("ready");
         await fetchStatus();
         await subscribeToPush();
@@ -541,12 +571,17 @@ export default function HomePage() {
         }
 
         if (data.paired) {
+          setWaitingForSlot(null);
           setAppState("ready");
           await fetchFullStatus();
           await subscribeToPush();
         } else if (data.waiting) {
+          // Track which slot we're waiting for partner to join
+          const slotWaiting = data.slot || pendingSlot || 1;
+          setWaitingForSlot(slotWaiting);
           setAppState("waiting");
           localStorage.setItem("pairCode", code);
+          localStorage.setItem("waitingForSlot", String(slotWaiting));
           setPairCode(code);
           await subscribeToPush();
         }
@@ -632,16 +667,25 @@ export default function HomePage() {
 
     const interval = setInterval(async () => {
       const data = await fetchFullStatus();
-      if (data?.paired && data?.hasPartner) {
+      if (!data) return;
+
+      // Check if the specific slot we're waiting for has a partner now
+      const slotToCheck = waitingForSlot || 1;
+      const hasPartnerBySlot = (data as { hasPartnerBySlot?: { 1?: boolean; 2?: boolean } }).hasPartnerBySlot;
+      const slotHasPartner = hasPartnerBySlot?.[slotToCheck] ?? false;
+
+      if (slotHasPartner) {
+        setWaitingForSlot(null);
+        localStorage.removeItem("waitingForSlot");
         setAppState("ready");
         await fetchStatus();
         await subscribeToPush();
-        logDebug("partner joined");
+        logDebug(`partner joined slot ${slotToCheck}`);
       }
     }, 3000);
 
     return () => clearInterval(interval);
-  }, [appState, deviceId, fetchFullStatus, fetchStatus]);
+  }, [appState, waitingForSlot, deviceId, fetchFullStatus, fetchStatus, logDebug]);
 
   // Long press handling for slot switching or hint
   const handleLongPressAction = useCallback(() => {
@@ -712,8 +756,19 @@ export default function HomePage() {
       longPressFiredRef.current = false;
       return;
     }
-    // Normal tap - do chomp
-    handleChomp();
+
+    // Double-tap detection for chomp
+    const now = Date.now();
+    const timeSinceLastTap = now - lastTapTimeRef.current;
+
+    if (timeSinceLastTap < DOUBLE_TAP_THRESHOLD) {
+      // Double-tap detected - do chomp
+      lastTapTimeRef.current = 0; // Reset to prevent triple-tap
+      handleChomp();
+    } else {
+      // First tap - just record the time
+      lastTapTimeRef.current = now;
+    }
   }, []);
 
   const handleCookieContextMenu = useCallback((e: React.MouseEvent) => {
