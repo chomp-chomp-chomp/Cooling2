@@ -266,6 +266,82 @@ export async function POST(request: NextRequest) {
   }
 }
 
+export async function DELETE(request: NextRequest) {
+  try {
+    const deviceId = request.cookies.get('deviceId')?.value;
+    if (!deviceId) {
+      return NextResponse.json({ ok: false, error: 'Not authenticated' }, { status: 401 });
+    }
+
+    const slotParam = request.nextUrl.searchParams.get('slot');
+    const slot: 1 | 2 = slotParam === '2' ? 2 : 1;
+
+    const { env } = getRequestContext() as unknown as { env: Env };
+    const db = env.DB;
+
+    if (!db) {
+      return NextResponse.json({ ok: true, slots: { 1: false, 2: false } });
+    }
+
+    const member = await db
+      .prepare('SELECT * FROM members WHERE device_id = ?')
+      .bind(deviceId)
+      .first<Member>();
+
+    if (!member) {
+      return NextResponse.json({ ok: true, slots: { 1: false, 2: false } });
+    }
+
+    let useLegacySchema = false;
+    try {
+      await db
+        .prepare('DELETE FROM member_pairs WHERE member_id = ? AND slot = ?')
+        .bind(member.id, slot)
+        .run();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes('no such table: member_pairs')) {
+        useLegacySchema = true;
+      } else {
+        throw error;
+      }
+    }
+
+    if (useLegacySchema) {
+      await db.prepare('DELETE FROM members WHERE device_id = ?').bind(deviceId).run();
+      return NextResponse.json({ ok: true, slots: { 1: false, 2: false } });
+    }
+
+    const remainingPairs = await db
+      .prepare('SELECT * FROM member_pairs WHERE member_id = ? ORDER BY slot')
+      .bind(member.id)
+      .all<MemberPair>();
+
+    const remaining = remainingPairs.results || [];
+
+    if (remaining.length === 0) {
+      await db.prepare('DELETE FROM members WHERE id = ?').bind(member.id).run();
+      return NextResponse.json({ ok: true, slots: { 1: false, 2: false } });
+    }
+
+    const primaryPair = remaining[0];
+    await db
+      .prepare('UPDATE members SET pair_id = ? WHERE id = ?')
+      .bind(primaryPair.pair_id, member.id)
+      .run();
+
+    const slots = {
+      1: remaining.some(mp => mp.slot === 1),
+      2: remaining.some(mp => mp.slot === 2),
+    };
+
+    return NextResponse.json({ ok: true, slots });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return NextResponse.json({ ok: false, error: message }, { status: 500 });
+  }
+}
+
 // Helper function to return current state
 async function returnCurrentState(
   db: Env['DB'],

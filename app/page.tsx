@@ -18,7 +18,8 @@ interface SlotsInfo {
 }
 
 const OVEN_SECONDS = 108;
-const LONG_PRESS_MS = 500;
+const DOUBLE_TAP_MS = 320;
+const TAP_MOVE_TOLERANCE = 10;
 
 export default function HomePage() {
   const [appState, setAppState] = useState<AppState>("loading");
@@ -48,10 +49,10 @@ export default function HomePage() {
   const buzzAudioRef = useRef<HTMLAudioElement | null>(null);
   const prevReceivedRef = useRef<number>(0);
 
-  // Long press state for robust detection
-  const longPressTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const longPressFiredRef = useRef<boolean>(false);
   const pressStartPosRef = useRef<{ x: number; y: number } | null>(null);
+  const tapStartPosRef = useRef<{ x: number; y: number } | null>(null);
+  const tapMovedRef = useRef<boolean>(false);
+  const lastTapAtRef = useRef<number | null>(null);
 
   // Pending slot for second pairing (set from Notes page link)
   const [pendingSlot, setPendingSlot] = useState<SlotNum | null>(null);
@@ -60,7 +61,7 @@ export default function HomePage() {
   const [waitingForSlot, setWaitingForSlot] = useState<SlotNum | null>(null);
 
   // Swipe threshold for slot switching
-  const SWIPE_THRESHOLD = 50; // px
+  const SWIPE_THRESHOLD = 40; // px
 
   const logDebug = useCallback((message: string) => {
     const timestamp = new Date().toLocaleTimeString();
@@ -685,39 +686,14 @@ export default function HomePage() {
     return () => clearInterval(interval);
   }, [appState, waitingForSlot, deviceId, fetchFullStatus, fetchStatus, logDebug]);
 
-  // Long press sends chomp
-  const handleLongPressAction = useCallback(() => {
-    if (isSending || sentRemaining > 0) return;
-    handleChomp();
-  }, [isSending, sentRemaining]);
-
-  const handleCookiePointerDown = useCallback((e: React.PointerEvent) => {
-    // Capture pointer for reliable tracking
-    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
-
-    longPressFiredRef.current = false;
+  const handleSwipePointerDown = useCallback((e: React.PointerEvent) => {
     pressStartPosRef.current = { x: e.clientX, y: e.clientY };
+  }, []);
 
-    longPressTimerRef.current = setTimeout(() => {
-      longPressFiredRef.current = true;
-      handleLongPressAction();
-    }, LONG_PRESS_MS);
-  }, [handleLongPressAction]);
-
-  const handleCookiePointerUp = useCallback((e: React.PointerEvent) => {
-    (e.target as HTMLElement).releasePointerCapture?.(e.pointerId);
-
-    if (longPressTimerRef.current) {
-      clearTimeout(longPressTimerRef.current);
-      longPressTimerRef.current = null;
-    }
-
-    // Check for swipe to switch slots (only if both slots exist)
+  const handleSwipePointerUp = useCallback((e: React.PointerEvent) => {
     if (pressStartPosRef.current && slotsInfo.slots[1] && slotsInfo.slots[2]) {
       const dx = e.clientX - pressStartPosRef.current.x;
-      // Horizontal swipe detection
       if (Math.abs(dx) > SWIPE_THRESHOLD) {
-        // Swipe right → slot 1, swipe left → slot 2
         const newSlot: SlotNum = dx > 0 ? 1 : 2;
         if (newSlot !== activeSlot) {
           setActiveSlot(newSlot);
@@ -729,26 +705,52 @@ export default function HomePage() {
     pressStartPosRef.current = null;
   }, [slotsInfo.slots, activeSlot, logDebug]);
 
-  const handleCookiePointerMove = useCallback((e: React.PointerEvent) => {
-    // Cancel long press if moved more than 10px (for swipe detection)
-    if (pressStartPosRef.current && longPressTimerRef.current) {
+  const handleSwipePointerMove = useCallback((e: React.PointerEvent) => {
+    if (pressStartPosRef.current) {
       const dx = e.clientX - pressStartPosRef.current.x;
       const dy = e.clientY - pressStartPosRef.current.y;
-      if (Math.sqrt(dx * dx + dy * dy) > 10) {
-        clearTimeout(longPressTimerRef.current);
-        longPressTimerRef.current = null;
+      if (Math.sqrt(dx * dx + dy * dy) > TAP_MOVE_TOLERANCE) {
+        tapMovedRef.current = true;
       }
     }
   }, []);
 
-  const handleCookieClick = useCallback((e: React.MouseEvent) => {
-    // If long press fired, swallow the click
-    if (longPressFiredRef.current) {
-      e.preventDefault();
-      e.stopPropagation();
-      longPressFiredRef.current = false;
+  const handleCookiePointerDown = useCallback((e: React.PointerEvent) => {
+    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+    tapStartPosRef.current = { x: e.clientX, y: e.clientY };
+    tapMovedRef.current = false;
+  }, []);
+
+  const handleCookiePointerUp = useCallback((e: React.PointerEvent) => {
+    (e.target as HTMLElement).releasePointerCapture?.(e.pointerId);
+
+    if (tapStartPosRef.current) {
+      const dx = e.clientX - tapStartPosRef.current.x;
+      const dy = e.clientY - tapStartPosRef.current.y;
+      if (Math.sqrt(dx * dx + dy * dy) > TAP_MOVE_TOLERANCE) {
+        tapMovedRef.current = true;
+      }
     }
-    // Regular tap does nothing - long press sends chomp
+
+    if (!tapMovedRef.current) {
+      const now = Date.now();
+      if (lastTapAtRef.current && now - lastTapAtRef.current < DOUBLE_TAP_MS) {
+        lastTapAtRef.current = null;
+        if (!isSending && sentRemaining <= 0) {
+          handleChomp();
+        }
+      } else {
+        lastTapAtRef.current = now;
+      }
+    } else {
+      lastTapAtRef.current = null;
+    }
+
+    tapStartPosRef.current = null;
+  }, [handleChomp, isSending, sentRemaining]);
+
+  const handleCookieClick = useCallback(() => {
+    // Single taps do nothing; double tap handled in pointer up.
   }, []);
 
   const handleCookieContextMenu = useCallback((e: React.MouseEvent) => {
@@ -920,14 +922,19 @@ export default function HomePage() {
   // Ready state - main chomp interface
   return (
     <main style={styles.page}>
-      <div style={styles.centerWrap}>
+      <div
+        style={styles.centerWrap}
+        onPointerDown={handleSwipePointerDown}
+        onPointerUp={handleSwipePointerUp}
+        onPointerCancel={handleSwipePointerUp}
+        onPointerMove={handleSwipePointerMove}
+      >
         <button
           type="button"
           onClick={handleCookieClick}
           onPointerDown={handleCookiePointerDown}
           onPointerUp={handleCookiePointerUp}
           onPointerCancel={handleCookiePointerUp}
-          onPointerMove={handleCookiePointerMove}
           onContextMenu={handleCookieContextMenu}
           disabled={inOven || isSending}
           aria-disabled={inOven || isSending}
