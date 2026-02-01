@@ -278,9 +278,10 @@ export default function Notes() {
 
   const handleAnotherCooling = useCallback(() => {
     // Set pending slot in localStorage and navigate to home for pairing
-    localStorage.setItem("pendingSlot", "2");
+    const openSlot: 1 | 2 = slots?.[1] ? 2 : 1;
+    localStorage.setItem("pendingSlot", String(openSlot));
     router.push("/");
-  }, [router]);
+  }, [router, slots]);
 
   const hasSlot1 = !!slots?.[1];
   const hasSlot2 = !!slots?.[2];
@@ -390,7 +391,7 @@ export default function Notes() {
                                 onClick={handleClearActiveSlot}
                                 style={styles.inlineLink}
                               >
-                                Clear <em>this</em> Cooling.
+                                Clear <em style={styles.activeAccent}>this</em> Cooling.
                               </button>
                               {"\n"}
                             </>
@@ -542,5 +543,8 @@ const styles: Record<string, React.CSSProperties> = {
     textDecoration: "underline",
     textDecorationColor: "var(--muted-text)",
     textUnderlineOffset: "2px",
+  },
+  activeAccent: {
+    color: "var(--dot-active)",
   },
 };
