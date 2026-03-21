@@ -102,7 +102,7 @@ export default function InfoPage() {
       <br />
 
       <nav className={styles.nav}>
-        <a href="https://chomp.chom.pm" className={styles.backLink}>
+        <a href="https://cooling.chmp.me" className={styles.backLink}>
           app →
         </a>
       </nav>
